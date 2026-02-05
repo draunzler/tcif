@@ -37,8 +37,3 @@ def download_twitch_clip(clip_url: str, output_filename: str = None) -> bool:
     except Exception as e:
         print(f"Unexpected error: {e}")
         return False
-
-
-# Test it
-if __name__ == "__main__":
-    download_twitch_clip("https://www.twitch.tv/trainwreckstv/clip/StormyCalmWerewolfPlanking-419-wzVbUE6k_BR9")

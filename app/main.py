@@ -1,59 +1,65 @@
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
-import secrets
-from datetime import datetime
+"""
+Main application runner - runs both web server and scheduler concurrently.
+"""
+import os
+import sys
+import logging
+import threading
+import uvicorn
+from dotenv import load_dotenv
 
-from app.twitch_auth import (
-    get_login_url,
-    exchange_code_for_token,
-    get_user_info
+# Initialize database before anything else
+from app.database import init_database
+init_database()
+
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 
-from app.database import users_collection
-from app.models import twitch_user_schema
-
-app = FastAPI()
-
-STATE_CACHE = set()
+logger = logging.getLogger(__name__)
 
 
-@app.get("/")
-def root():
-    return {"status": "Twitch OAuth running"}
+def run_scheduler():
+    """Run the clip download scheduler."""
+    from app.scheduler import main
+    main()
 
 
-@app.get("/auth/twitch/login")
-def twitch_login():
-    state = secrets.token_urlsafe(16)
-    STATE_CACHE.add(state)
-
-    return RedirectResponse(get_login_url(state))
-
-
-@app.get("/auth/twitch/callback")
-def twitch_callback(code: str, state: str):
-
-    if state not in STATE_CACHE:
-        return {"error": "Invalid OAuth state"}
-
-    STATE_CACHE.remove(state)
-
-    token = exchange_code_for_token(code)
-    user = get_user_info(token["access_token"])
-
-    users_collection.update_one(
-        {"twitch_user_id": user["id"]},
-        {
-            "$set": {
-                **twitch_user_schema(user, token),
-                "updated_at": datetime.utcnow()
-            }
-        },
-        upsert=True
+def run_web_server():
+    """Run the web dashboard server."""
+    uvicorn.run(
+        "app.web:app",
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
     )
 
-    return {
-        "message": "Login successful",
-        "twitch_user_id": user["id"],
-        "login": user["login"]
-    }
+
+def main():
+    """Run both scheduler and web server concurrently."""
+    logger.info("""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║         TWITCH CLIP AUTO-UPLOADER - Scheduler + Dashboard                ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+    """)
+    
+    logger.info("🌐 Starting web dashboard on http://0.0.0.0:8000")
+    logger.info("⏰ Starting clip download scheduler")
+    
+    # Run web server in a separate thread
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    
+    # Run scheduler in main thread (blocking)
+    run_scheduler()
+
+
+if __name__ == "__main__":
+    main()

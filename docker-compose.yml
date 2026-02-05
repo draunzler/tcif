@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  clip-downloader:
+    build: .
+    container_name: twitch-clip-downloader
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount current directory to save downloaded clips to host
+      - ./downloads:/app/downloads
+      # Persist game rotation data
+      - ./data:/app/data
+    restart: unless-stopped
+

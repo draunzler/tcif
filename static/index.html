@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Clip Auto-Uploader Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+
+<body class="cloudflare-theme">
+    <div class="app-layout">
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+                <div class="top-bar-left">
+                    <div class="logo">
+                        <span class="logo-icon">🎬</span>
+                        <span class="logo-text">TCIF</span>
+                    </div>
+                </div>
+                <div class="search-bar">
+                    <input type="text" placeholder="Search clips..." id="clip-search">
+                </div>
+            </header>
+
+            <div class="dashboard-body">
+                <div class="page-title">
+                    <h2>Overview</h2>
+                    <p>Monitor your Twitch clip automation and YouTube uploads.</p>
+                </div>
+
+                <!-- YouTube Connection Status -->
+                <div class="status-hero" id="youtube-status">
+                    <div class="status-hero-content">
+                        <div class="status-hero-icon" id="status-icon">❌</div>
+                        <div class="status-hero-text">
+                            <h3 id="status-title">YouTube Not Connected</h3>
+                            <p id="status-description">Enable automatic uploads by linking your YouTube account.</p>
+                        </div>
+                    </div>
+                    <button id="youtube-action-btn" class="btn btn-primary">Connect YouTube</button>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Total Clips</div>
+                        <div class="stat-value" id="total-clips">
+                            <div class="skeleton skeleton-value"></div>
+                        </div>
+                        <div class="stat-trend">Last 24h</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Uploaded</div>
+                        <div class="stat-value success" id="uploaded-clips">
+                            <div class="skeleton skeleton-value"></div>
+                        </div>
+                        <div class="stat-trend success">Active</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Pending</div>
+                        <div class="stat-value warning" id="pending-clips">
+                            <div class="skeleton skeleton-value"></div>
+                        </div>
+                        <div class="stat-trend">Waiting</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Failed</div>
+                        <div class="stat-value error" id="failed-clips">
+                            <div class="skeleton skeleton-value"></div>
+                        </div>
+                        <div class="stat-trend error">Needs Attention</div>
+                    </div>
+                </div>
+
+                <!-- YouTube Analytics Section -->
+                <section class="content-section" id="analytics-section" style="display: none; margin-bottom: 32px;">
+                    <div class="section-header">
+                        <h3>📈 YouTube Analytics (Last 30 Days)</h3>
+                        <div class="section-actions">
+                            <select id="analytics-days" class="btn btn-secondary btn-sm">
+                                <option value="7">Last 7 Days</option>
+                                <option value="30" selected>Last 30 Days</option>
+                                <option value="90">Last 90 Days</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="padding: 24px;">
+                        <div class="analytics-summary" id="analytics-summary" style="margin-bottom: 32px;">
+                            <div class="analytics-stat">
+                                <div class="analytics-label">Total Views</div>
+                                <div class="analytics-value" id="analytics-views">
+                                    <div class="skeleton skeleton-value" style="margin-inline:auto"></div>
+                                </div>
+                            </div>
+                            <div class="analytics-stat">
+                                <div class="analytics-label">Watch Time (mins)</div>
+                                <div class="analytics-value" id="analytics-watchtime">
+                                    <div class="skeleton skeleton-value" style="margin-inline:auto"></div>
+                                </div>
+                            </div>
+                            <div class="analytics-stat">
+                                <div class="analytics-label">Avg View Duration (s)</div>
+                                <div class="analytics-value" id="analytics-avgduration">
+                                    <div class="skeleton skeleton-value" style="margin-inline:auto"></div>
+                                </div>
+                            </div>
+                            <div class="analytics-stat">
+                                <div class="analytics-label">Subscribers Gained</div>
+                                <div class="analytics-value" id="analytics-subscribers">
+                                    <div class="skeleton skeleton-value" style="margin-inline:auto"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px;">
+                            <div>
+                                <h4 style="margin-bottom: 16px; font-size: 14px; font-weight: 600;">Views Over Time</h4>
+                                <div class="chart-container" id="views-chart-container">
+                                    <div class="skeleton skeleton-chart"></div>
+                                    <canvas id="views-chart"></canvas>
+                                </div>
+                            </div>
+                            <div>
+                                <h4 style="margin-bottom: 16px; font-size: 14px; font-weight: 600;">Watch Time (Minutes)
+                                </h4>
+                                <div class="chart-container" id="watchtime-chart-container">
+                                    <div class="skeleton skeleton-chart"></div>
+                                    <canvas id="watchtime-chart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Recent Uploads Table -->
+                <section class="content-section">
+                    <div class="section-header">
+                        <h3>Recent Activity</h3>
+                        <div class="section-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="cleanupPending()"
+                                id="cleanup-pending-btn">
+                                Clean Pending
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="cleanupFailed()" id="cleanup-failed-btn">
+                                Clean Failed
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="refreshData()">
+                                <span>Refetch</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="data-table-container">
+                        <table id="uploads-table">
+                            <thead>
+                                <tr>
+                                    <th>Video Title</th>
+                                    <th>Category</th>
+                                    <th>Creator</th>
+                                    <th>Views</th>
+                                    <th>Date Added</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="uploads-tbody">
+                                <tr>
+                                    <td colspan="7" class="loading">Fetching records...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

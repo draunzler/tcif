@@ -1,5 +1,10 @@
-fastapi
-uvicorn
 requests
 python-dotenv
-pymongo
+yt-dlp
+apscheduler
+fastapi
+uvicorn
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+aiofiles
