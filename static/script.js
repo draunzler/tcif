@@ -26,7 +26,8 @@ async function refreshData() {
         loadStats(),
         loadUploads(isInitial),
         loadAnalytics(isInitial),
-        loadTrending(isInitial)
+        loadTrending(isInitial),
+        loadTopGames(isInitial)
     ]);
 }
 
@@ -182,7 +183,11 @@ function renderTimeSeriesChart(canvasId, label, labels, data, color, chartInstan
         data: {
             labels: labels.map(l => {
                 const d = new Date(l);
-                return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                return d.toLocaleDateString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    month: 'short',
+                    day: 'numeric'
+                });
             }),
             datasets: [{
                 label: label,
@@ -256,19 +261,69 @@ async function cleanup(status) {
     }
 }
 
+// Helper to format date in IST
+function formatIST(dateString) {
+    return new Date(dateString).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+    });
+}
+
+// Render a reusable game grid card
+function createGameCard(game, options = {}) {
+    const artUrl = game.box_art_url
+        .replace('{width}', '285')
+        .replace('{height}', '380');
+
+    const meta = options.meta || '';
+    const flag = options.isTrending ? '<div class="trending-flag">TRENDING</div>' : '';
+
+    return `
+        <div class="game-card">
+            ${flag}
+            <div class="game-art-container">
+                <img src="${artUrl}" alt="${escapeHtml(game.name || game.game_name)}" class="game-art" loading="lazy">
+            </div>
+            <div class="game-info">
+                <div class="game-name">${escapeHtml(game.name || game.game_name)}</div>
+                <div class="game-meta">
+                    <span>${meta}</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Load top games
+async function loadTopGames(showSkeleton = false) {
+    const grid = document.getElementById('top-games-grid');
+    if (showSkeleton) {
+        grid.innerHTML = '<div class="loading-container"><div class="skeleton-chart" style="height: 200px"></div></div>';
+    }
+
+    try {
+        const response = await fetch('/api/top-games');
+        const result = await response.json();
+        const games = result.data;
+
+        grid.innerHTML = games.map(game => createGameCard(game)).join('');
+    } catch (error) {
+        console.error('Error loading top games:', error);
+        grid.innerHTML = '<div class="loading-container">Error loading top games.</div>';
+    }
+}
+
 // Load trending games
 async function loadTrending(showSkeleton = false) {
-    const tbody = document.getElementById('trending-tbody');
+    const grid = document.getElementById('trending-grid');
 
     if (showSkeleton) {
-        tbody.innerHTML = `
-            <tr>
-                <td><div class="skeleton skeleton-text" style="width: 70%"></div></td>
-                <td><div class="skeleton skeleton-text" style="width: 50%"></div></td>
-                <td><div class="skeleton skeleton-text" style="width: 40%"></div></td>
-                <td><div class="skeleton skeleton-text" style="width: 60%"></div></td>
-            </tr>
-        `.repeat(3);
+        grid.innerHTML = '<div class="loading-container"><div class="skeleton-chart" style="height: 200px"></div></div>';
     }
 
     try {
@@ -276,41 +331,21 @@ async function loadTrending(showSkeleton = false) {
         const trending = await response.json();
 
         if (trending.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="loading">No games currently trending. Checking every hour.</td></tr>';
+            grid.innerHTML = '<div class="loading-container">No games currently trending. Checking every hour.</div>';
             return;
         }
 
-        renderTrending(trending);
+        grid.innerHTML = trending.map(game => {
+            const viewers = (game.current_viewers || 0).toLocaleString();
+            return createGameCard(game, {
+                isTrending: true,
+                meta: `🔥 ${viewers} viewers`
+            });
+        }).join('');
     } catch (error) {
         console.error('Error loading trending:', error);
-        tbody.innerHTML = '<tr><td colspan="4" class="loading">Error loading trends.</td></tr>';
+        grid.innerHTML = '<div class="loading-container">Error loading trends.</div>';
     }
-}
-
-function renderTrending(trending) {
-    const tbody = document.getElementById('trending-tbody');
-
-    tbody.innerHTML = trending.map(game => {
-        const date = new Date(game.trending_since).toLocaleDateString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-        });
-
-        let postingStatus = 'Normal Rotation';
-        if (game.post_count_override > 0) {
-            postingStatus = `✨ Boosted (2x/day)`;
-        } else if (game.game_id === '32399' || game.game_id === '516575') {
-            postingStatus = 'Fixed Slot (2x/day)';
-        }
-
-        return `
-            <tr>
-                <td><span style="font-weight: 600; color: var(--cf-blue);">${escapeHtml(game.game_name)}</span></td>
-                <td>${(game.current_viewers || 0).toLocaleString()} views</td>
-                <td style="color: var(--text-secondary); font-size: 13px;">${date}</td>
-                <td><span class="status-badge" style="background: rgba(243, 128, 32, 0.1); color: #f38020; border: 1px solid rgba(243, 128, 32, 0.2);">${postingStatus}</span></td>
-            </tr>
-        `;
-    }).join('');
 }
 
 // Load recent uploads
@@ -359,9 +394,7 @@ function renderClips(clips) {
     }
 
     tbody.innerHTML = clips.map(clip => {
-        const date = new Date(clip.downloaded_at).toLocaleDateString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-        });
+        const date = formatIST(clip.downloaded_at);
         const statusClass = `status-${clip.upload_status}`;
         const statusText = clip.upload_status.charAt(0).toUpperCase() + clip.upload_status.slice(1);
 
@@ -383,7 +416,7 @@ function renderClips(clips) {
                 <td><span style="color: var(--cf-blue); font-size: 13px;">${escapeHtml(clip.game_name || 'N/A')}</span></td>
                 <td>${escapeHtml(clip.broadcaster_name || 'N/A')}</td>
                 <td>${(clip.view_count || 0).toLocaleString()}</td>
-                <td style="color: var(--text-secondary); font-size: 13px;">${date}</td>
+                <td style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">${date}</td>
                 <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                 <td style="white-space: nowrap;">${actionBtn}</td>
             </tr>

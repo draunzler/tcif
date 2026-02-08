@@ -135,30 +135,23 @@
                     </div>
                 </section>
 
-                <!-- Trending Games Leaderboard -->
-                <section class="content-section" style="margin-bottom: 32px;">
-                    <div class="section-header">
-                        <h3>🔥 Trending Games Leaderboard</h3>
-                        <div class="section-actions">
-                            <span class="stat-trend success">Updates hourly</span>
-                        </div>
+                <!-- Top Games Section -->
+                <section class="content-section-none" style="margin-bottom: 48px; background: transparent; border: none; box-shadow: none;">
+                    <div class="section-header" style="background: transparent; padding-left: 0;">
+                        <h3>🌟 Top Games</h3>
                     </div>
-                    <div class="data-table-container">
-                        <table id="trending-table">
-                            <thead>
-                                <tr>
-                                    <th>Game Name</th>
-                                    <th>Current Viewers</th>
-                                    <th>Trending Since</th>
-                                    <th>Posting Status</th>
-                                </tr>
-                            </thead>
-                            <tbody id="trending-tbody">
-                                <tr>
-                                    <td colspan="4" class="loading">Calculating trends...</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    <div class="game-grid" id="top-games-grid">
+                        <div class="loading-container">Loading top games...</div>
+                    </div>
+                </section>
+
+                <!-- Trending Games Section -->
+                <section class="content-section-none" style="margin-bottom: 48px; background: transparent; border: none; box-shadow: none;">
+                    <div class="section-header" style="background: transparent; padding-left: 0;">
+                        <h3>🔥 Trending Games</h3>
+                    </div>
+                    <div class="game-grid" id="trending-grid">
+                        <div class="loading-container">Calculating trends...</div>
                     </div>
                 </section>
 
