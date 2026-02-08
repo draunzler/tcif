@@ -4,8 +4,8 @@ Automatically download top Twitch clips hourly and upload them to YouTube with a
 
 ## ✨ Features
 
-- 🔄 **Auto-updates top games**: Fetches top 5 trending games daily at 3 AM UTC
-- ⏰ **Hourly clip downloads**: Downloads top clips every hour from rotating games
+- 🔄 **Auto-updates top games**: Fetches top 5 trending games every hour
+- ⏰ **Scheduled clip downloads**: Downloads qualified clips every 3 hours (8 per day)
 - 📤 **YouTube auto-upload**: Automatically uploads clips to your YouTube channel
 - 🎯 **Smart rotation**: Cycles through the top 5 games for variety
 - 📊 **Web dashboard**: Beautiful UI to monitor stats and uploads
@@ -93,8 +93,8 @@ Access the dashboard at **http://localhost:8000** to:
 
 ### Automated Flow
 
-1. **Daily at 3 AM UTC**: Fetches top 5 trending games from Twitch API
-2. **Every hour**: 
+1. **Every hour**: Fetches top 5 trending games from Twitch API
+2. **Every 3 hours**: 
    - Selects next game in rotation
    - Fetches top clips from last hour
    - Downloads the best clip
@@ -198,8 +198,8 @@ python3 -m app.download_clip
 
 | Job | Frequency | Description |
 |-----|-----------|-------------|
-| **Update Top Games** | Daily at 3:00 AM UTC | Fetches top 5 trending games |
-| **Download & Upload Clips** | Every hour (on the hour) | Downloads and uploads clips |
+| **Update Top Games** | Every hour | Fetches top 5 trending games |
+| **Download & Upload Clips** | Every 3 hours | Downloads and uploads qualified clips |
 
 ## 🔍 Monitoring
 
