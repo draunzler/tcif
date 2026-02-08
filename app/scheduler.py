@@ -9,9 +9,15 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
-from app.clips import get_top_games, get_top_clips_last_hour
+from app.clips import get_top_games, get_top_clips_last_hour, get_game_viewers, get_top_clips_last_n_hours
 from app.game_manager import save_top_games, get_next_game_id
 from app.downloader import download_twitch_clip
+from app.database import (
+    save_game_stats, get_game_stats_one_hour_ago, 
+    update_trending_status, get_trending_leaderboard,
+    get_trending_game_by_id, set_game_post_override,
+    add_clip, update_upload_status
+)
 
 load_dotenv()
 
@@ -51,6 +57,118 @@ def update_top_games():
 
 
 
+def calculate_trending():
+    """
+    Calculate trending games based on viewer growth.
+    Runs every hour.
+    """
+    logger.info("📈 Calculating trending games...")
+    try:
+        top_games = get_top_games(limit=20)
+        for game in top_games:
+            game_id = game['id']
+            game_name = game['name']
+            
+            try:
+                current_viewers = get_game_viewers(game_id)
+                # Save stats
+                save_game_stats(game_id, game_name, current_viewers)
+                
+                prev_viewers = get_game_stats_one_hour_ago(game_id)
+                
+                if prev_viewers and prev_viewers > 0:
+                    growth_rate = (current_viewers - prev_viewers) / prev_viewers
+                    logger.info(f"   - {game_name}: {current_viewers} viewers (Growth: {growth_rate:+.2%})")
+                    
+                    # Trending heuristic
+                    is_trending = growth_rate > 0.25 and current_viewers > 5000
+                    
+                    # Update trending status in DB
+                    if is_trending:
+                        logger.info(f"🔥 TRENDING DETECTED: {game_name}")
+                        
+                        # Check if it's been trending for 24h
+                        # (This is simplified for now: we check if it was already trending)
+                        existing_trend = get_trending_game_by_id(game_id)
+                        if existing_trend and existing_trend.get('is_trending'):
+                            # Check timestamp
+                            since = datetime.fromisoformat(existing_trend['trending_since'].replace('Z', '+00:00'))
+                            if (datetime.utcnow() - since).total_seconds() >= 86400:
+                                # Trending for > 24h, set override for 3 days
+                                logger.info(f"💪 {game_name} trending for 24h+! Setting 3-day posting boost.")
+                                set_game_post_override(game_id, 2, days=3)
+                        
+                        update_trending_status(game_id, game_name, True)
+                    else:
+                        # Only mark as not trending if it was previously trending
+                        # This avoids cluttering the trending_games table
+                        existing_trend = get_trending_game_by_id(game_id)
+                        if existing_trend and existing_trend.get('is_trending'):
+                            logger.info(f"📉 {game_name} no longer trending")
+                            update_trending_status(game_id, game_name, False)
+                else:
+                    logger.info(f"   - {game_name}: {current_viewers} viewers (No history yet)")
+            except Exception as inner_e:
+                logger.error(f"Error calculating trending for {game_name}: {inner_e}")
+                
+    except Exception as e:
+        logger.error(f"❌ Error in calculate_trending: {e}", exc_info=True)
+
+
+def get_game_to_post():
+    """
+    Determine which game should be posted in the current slot (1-8).
+    """
+    # Count how many clips were posted in the last 24 hours
+    from app.database import get_recent_clips
+    recent_clips = get_recent_clips(limit=20) # Get enough to check last 24h
+    now = datetime.utcnow()
+    posted_today = [c for c in recent_clips if (now - datetime.fromisoformat(c['downloaded_at'].replace('Z', '+00:00'))).total_seconds() < 86400]
+    
+    if len(posted_today) >= 8:
+        logger.info("🚫 Daily limit of 8 videos reached. Skipping this slot.")
+        return None, None
+
+    # Determine slot number (0-7)
+    slot = len(posted_today)
+    
+    # Priority 1: CS (slot 0 and 3)
+    cs_posted = [c for c in posted_today if c['game_id'] == '32399']
+    if len(cs_posted) < 2 and (slot == 0 or slot == 3 or slot >= 6):
+        return '32399', 'Counter-Strike'
+        
+    # Priority 2: Valorant (slot 1 and 4)
+    val_posted = [c for c in posted_today if c['game_id'] == '516575']
+    if len(val_posted) < 2 and (slot == 1 or slot == 4 or slot >= 6):
+        return '516575', 'Valorant'
+
+    # Priority 3: Top Trending Game with override (slot 2 and 5)
+    leaderboard = get_trending_leaderboard()
+    if leaderboard:
+        top_trending = leaderboard[0]
+        # Check if it has an active override
+        if top_trending.get('post_count_override', 0) > 0:
+            # Check if override still valid
+            if top_trending.get('override_until'):
+                until = datetime.fromisoformat(top_trending['override_until'].replace('Z', '+00:00'))
+                if now < until:
+                    # Check if already posted 2 for this game
+                    trending_posted = [c for c in posted_today if c['game_id'] == top_trending['game_id']]
+                    if len(trending_posted) < 2:
+                        return top_trending['game_id'], top_trending['game_name']
+
+    # Priority 4: Any trending game (if not CS/Val and we have space)
+    if leaderboard:
+        for tg in leaderboard:
+            if tg['game_id'] not in ['32399', '516575']:
+                # See if we already posted it today
+                if not any(c for c in posted_today if c['game_id'] == tg['game_id']):
+                    return tg['game_id'], tg['game_name']
+
+    # Priority 5: Rotating top games
+    return get_next_game_id()
+
+
 def download_clips():
     """
     Download clips from the next game in rotation.
@@ -61,18 +179,22 @@ def download_clips():
     logger.info("="*80)
     
     try:
-        # Get next game in rotation
-        game_id, game_name = get_next_game_id()
+        # Determine which game to post
+        game_id, game_name = get_game_to_post()
         
         if not game_id:
-            logger.error("❌ No games available. Run game update first.")
             return
         
         logger.info(f"🎮 Selected game: {game_name} (ID: {game_id})")
         
-        # Fetch top clips from this game
-        logger.info("🔍 Fetching top clips from the last hour...")
-        clips = get_top_clips_last_hour(game_id=game_id, limit=10)
+        # Check if it's a trending game to fetch the right clips
+        existing_trend = get_trending_game_by_id(game_id)
+        if existing_trend and existing_trend.get('is_trending'):
+            logger.info("🔍 Fetching top clips from the last 3 hours (Trending rule)...")
+            clips = get_top_clips_last_n_hours(game_id=game_id, hours=3, limit=10)
+        else:
+            logger.info("🔍 Fetching top clips from the last hour...")
+            clips = get_top_clips_last_hour(game_id=game_id, limit=10)
         
         if not clips:
             logger.warning(f"❌ No clips found in the last hour for {game_name}.")
@@ -167,18 +289,12 @@ def main():
     
     scheduler = BlockingScheduler()
     
-    # Run game update immediately on startup, then daily at 3 AM
-    logger.info("📅 Scheduling jobs:")
-    logger.info("   - Top games update: Daily at 3:00 AM UTC (fetches top 5 games)")
-    logger.info("   - Clip downloads: Every 3 hours (rotates through the 5 games)")
-    
-    # Update games immediately on startup
-    logger.info("🚀 Running initial top games update...")
+    # Run initial checks
+    logger.info("🚀 Running initial tasks...")
     update_top_games()
-    
-    # Download a clip immediately for testing
-    logger.info("🧪 Running immediate test download...")
-    download_clips()
+    calculate_trending()
+    # Skip immediate download to avoid double posting if restarted frequently
+    # download_clips()
     
     # Schedule daily game update at 3 AM UTC
     scheduler.add_job(
@@ -189,12 +305,21 @@ def main():
         replace_existing=True
     )
     
-    # Schedule clip downloads every 3 hours
+    # Schedule trending calculation every hour
+    scheduler.add_job(
+        calculate_trending,
+        trigger=CronTrigger(minute=5),  # 5 minutes past every hour
+        id='calculate_trending',
+        name='Calculate trending games',
+        replace_existing=True
+    )
+    
+    # Schedule clip downloads every 3 hours (to match 8/day limit)
     scheduler.add_job(
         download_clips,
-        trigger=CronTrigger(hour='*/3', minute=0),  # Run every 3 hours
+        trigger=CronTrigger(hour='*/3', minute=30),  # Every 3 hours at :30
         id='download_clips',
-        name='Download clips from rotating games',
+        name='Download and post clips',
         replace_existing=True
     )
     
