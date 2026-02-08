@@ -16,6 +16,7 @@ from app.youtube_auth import (
 )
 from app.database import get_stats, get_recent_clips, delete_clip, delete_clips_by_status, get_trending_leaderboard
 from app.youtube_analytics import get_channel_analytics, get_channel_summary
+from app.youtube_videos import get_my_recent_videos
 
 load_dotenv()
 
@@ -59,10 +60,23 @@ async def api_uploads(limit: int = 50):
 async def api_top_games():
     """Get top games list."""
     import json
-    data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "top_games.json")
+    data_path = "/app/data/top_games.json"
+    if not os.path.exists(data_path):
+        # Fallback for local development
+        data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "top_games.json")
+    
     with open(data_path) as f:
         return JSONResponse(json.load(f))
 
+
+@app.get("/api/youtube-videos")
+async def api_youtube_videos(limit: int = 50, raw: bool = False):
+    """Get actual YouTube videos from the channel."""
+    if not is_authenticated():
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+    
+    videos = get_my_recent_videos(limit=limit, raw_format=raw)
+    return JSONResponse(videos)
 
 @app.get("/api/trending")
 async def api_trending():
