@@ -39,6 +39,27 @@ def init_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id TEXT NOT NULL,
+                game_name TEXT NOT NULL,
+                viewer_count INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS trending_games (
+                game_id TEXT PRIMARY KEY,
+                game_name TEXT NOT NULL,
+                trending_since TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                post_count_override INTEGER DEFAULT 0,
+                override_until TIMESTAMP,
+                is_trending BOOLEAN DEFAULT 1
+            )
+        ''')
         conn.commit()
     
     logger.info("Database initialized")
@@ -220,3 +241,73 @@ def delete_clips_by_status(status):
         
         logger.info(f"Deleted {len(file_paths)} {status} clips from database")
         return file_paths
+def save_game_stats(game_id, game_name, viewer_count):
+    """Save current viewer count for a game."""
+    with get_db() as conn:
+        conn.execute('''
+            INSERT INTO game_stats (game_id, game_name, viewer_count)
+            VALUES (?, ?, ?)
+        ''', (game_id, game_name, viewer_count))
+        conn.commit()
+
+def get_game_stats_one_hour_ago(game_id):
+    """Get viewer count for a game from approximately one hour ago."""
+    with get_db() as conn:
+        cursor = conn.execute('''
+            SELECT viewer_count FROM game_stats
+            WHERE game_id = ? AND timestamp <= datetime('now', '-1 hour')
+            ORDER BY timestamp DESC
+            LIMIT 1
+        ''', (game_id,))
+        row = cursor.fetchone()
+        return row['viewer_count'] if row else None
+
+def update_trending_status(game_id, game_name, is_trending):
+    """Update trending status for a game."""
+    with get_db() as conn:
+        if is_trending:
+            conn.execute('''
+                INSERT INTO trending_games (game_id, game_name, trending_since, is_trending)
+                VALUES (?, ?, CURRENT_TIMESTAMP, 1)
+                ON CONFLICT(game_id) DO UPDATE SET is_trending = 1, game_name = ?
+            ''', (game_id, game_name, game_name))
+        else:
+            conn.execute('''
+                UPDATE trending_games SET is_trending = 0 WHERE game_id = ?
+            ''', (game_id,))
+        conn.commit()
+
+def set_game_post_override(game_id, post_count, days=3):
+    """Set a post count override for a game for a specified number of days."""
+    until = (datetime.utcnow() + timedelta(days=days)).isoformat()
+    with get_db() as conn:
+        conn.execute('''
+            UPDATE trending_games
+            SET post_count_override = ?, override_until = ?
+            WHERE game_id = ?
+        ''', (post_count, until, game_id))
+        conn.commit()
+
+def get_trending_leaderboard():
+    """Get list of currently trending games."""
+    with get_db() as conn:
+        cursor = conn.execute('''
+            SELECT t.game_id, t.game_name, t.trending_since, t.post_count_override,
+                   s.viewer_count as current_viewers
+            FROM trending_games t
+            JOIN (
+                SELECT game_id, viewer_count
+                FROM game_stats
+                WHERE id IN (SELECT MAX(id) FROM game_stats GROUP BY game_id)
+            ) s ON t.game_id = s.game_id
+            WHERE t.is_trending = 1
+            ORDER BY s.viewer_count DESC
+        ''')
+        return [dict(row) for row in cursor.fetchall()]
+
+def get_trending_game_by_id(game_id):
+    """Get trending info for a specific game."""
+    with get_db() as conn:
+        cursor = conn.execute('SELECT * FROM trending_games WHERE game_id = ?', (game_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
