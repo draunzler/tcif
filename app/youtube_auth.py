@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # YouTube OAuth scopes
 SCOPES = [
     'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/youtube.readonly',
     'https://www.googleapis.com/auth/yt-analytics.readonly'
 ]
 
