@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 def update_top_games():
     """
     Fetch and save the top 5 trending games from Twitch.
-    Runs once per day.
+    Runs every hour.
     """
     logger.info("="*80)
     logger.info(f"🔄 Updating top trending games - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -323,10 +323,10 @@ def main():
     # Skip immediate download to avoid double posting if restarted frequently
     # download_clips()
     
-    # Schedule daily game update at 3 AM UTC
+    # Schedule daily game update every hour
     scheduler.add_job(
         update_top_games,
-        trigger=CronTrigger(hour=3, minute=0),
+        trigger=CronTrigger(hour='*'),  # Every hour
         id='update_top_games',
         name='Update top trending games',
         replace_existing=True
@@ -341,10 +341,10 @@ def main():
         replace_existing=True
     )
     
-    # Schedule clip downloads every 30 minutes to check for qualified candidates
+    # Schedule clip downloads every 3 hours to check for qualified candidates
     scheduler.add_job(
         download_clips,
-        trigger=CronTrigger(minute='0,30'),  # Twice an hour
+        trigger=CronTrigger(hour='*/3'),  # Every 3 hours
         id='download_clips',
         name='Download qualified clips (Strict Quota)',
         replace_existing=True
