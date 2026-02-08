@@ -191,6 +191,21 @@ def get_recent_clips(limit=50):
         return [dict(row) for row in rows]
 
 
+def is_clip_processed(clip_id):
+    """
+    Check if a clip has already been processed (downloaded or uploaded).
+    
+    Args:
+        clip_id: Twitch clip ID
+        
+    Returns:
+        bool: True if clip ID exists in database, False otherwise
+    """
+    with get_db() as conn:
+        cursor = conn.execute('SELECT 1 FROM clips WHERE clip_id = ?', (clip_id,))
+        return cursor.fetchone() is not None
+
+
 def delete_clip(clip_id):
     """
     Delete a clip from the database.
