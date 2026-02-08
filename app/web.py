@@ -53,6 +53,17 @@ async def api_uploads(limit: int = 50):
     """Get recent uploads."""
     clips = get_recent_clips(limit=limit)
     return JSONResponse(clips)
+
+    
+@app.get("/api/top-games")
+async def api_top_games():
+    """Get top games list."""
+    import json
+    data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "top_games.json")
+    with open(data_path) as f:
+        return JSONResponse(json.load(f))
+
+
 @app.get("/api/trending")
 async def api_trending():
     """Get trending games leaderboard."""
