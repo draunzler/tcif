@@ -14,7 +14,7 @@ from app.youtube_auth import (
     is_authenticated,
     disconnect as youtube_disconnect
 )
-from app.database import get_stats, get_recent_clips, delete_clip, delete_clips_by_status
+from app.database import get_stats, get_recent_clips, delete_clip, delete_clips_by_status, get_trending_leaderboard
 from app.youtube_analytics import get_channel_analytics, get_channel_summary
 
 load_dotenv()
@@ -53,6 +53,11 @@ async def api_uploads(limit: int = 50):
     """Get recent uploads."""
     clips = get_recent_clips(limit=limit)
     return JSONResponse(clips)
+@app.get("/api/trending")
+async def api_trending():
+    """Get trending games leaderboard."""
+    leaderboard = get_trending_leaderboard()
+    return JSONResponse(leaderboard)
 
 
 @app.get("/auth/youtube")
