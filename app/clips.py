@@ -141,3 +141,70 @@ def get_top_clips_last_hour(broadcaster_id: str = None, game_id: str = None, lim
     r.raise_for_status()
     
     return r.json()["data"]
+def get_game_viewers(game_id: str):
+    """
+    Get the total current viewer count for a specific game.
+    Uses the /helix/streams endpoint.
+    
+    Args:
+        game_id: The ID of the game
+        
+    Returns:
+        int: Total viewer count
+    """
+    access_token = get_app_access_token()
+    
+    headers = {
+        "Client-ID": CLIENT_ID,
+        "Authorization": f"Bearer {access_token}"
+    }
+    
+    params = {
+        "game_id": game_id,
+        "first": 100 # Top 100 streams for aggregate
+    }
+    
+    streams_url = "https://api.twitch.tv/helix/streams"
+    r = requests.get(streams_url, headers=headers, params=params, timeout=15)
+    r.raise_for_status()
+    
+    data = r.json().get("data", [])
+    total_viewers = sum(stream["viewer_count"] for stream in data)
+    
+    return total_viewers
+
+
+def get_top_clips_last_n_hours(game_id: str, hours: int = 3, limit: int = 1):
+    """
+    Get the top clips for a game within the last N hours.
+    
+    Args:
+        game_id: Game ID to filter clips
+        hours: Number of hours to look back
+        limit: Number of clips to return
+        
+    Returns:
+        List of clip data dictionaries
+    """
+    access_token = get_app_access_token()
+    
+    headers = {
+        "Client-ID": CLIENT_ID,
+        "Authorization": f"Bearer {access_token}"
+    }
+    
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(hours=hours)
+    
+    params = {
+        "game_id": game_id,
+        "started_at": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ended_at": end_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "first": min(limit, 100)
+    }
+    
+    clips_url = "https://api.twitch.tv/helix/clips"
+    r = requests.get(clips_url, headers=headers, params=params, timeout=15)
+    r.raise_for_status()
+    
+    return r.json()["data"]
