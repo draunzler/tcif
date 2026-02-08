@@ -25,7 +25,8 @@ async function refreshData() {
     await Promise.all([
         loadStats(),
         loadUploads(isInitial),
-        loadAnalytics(isInitial)
+        loadAnalytics(isInitial),
+        loadTrending(isInitial)
     ]);
 }
 
@@ -253,6 +254,63 @@ async function cleanup(status) {
     } catch (error) {
         console.error('Error cleaning up:', error);
     }
+}
+
+// Load trending games
+async function loadTrending(showSkeleton = false) {
+    const tbody = document.getElementById('trending-tbody');
+
+    if (showSkeleton) {
+        tbody.innerHTML = `
+            <tr>
+                <td><div class="skeleton skeleton-text" style="width: 70%"></div></td>
+                <td><div class="skeleton skeleton-text" style="width: 50%"></div></td>
+                <td><div class="skeleton skeleton-text" style="width: 40%"></div></td>
+                <td><div class="skeleton skeleton-text" style="width: 60%"></div></td>
+            </tr>
+        `.repeat(3);
+    }
+
+    try {
+        const response = await fetch('/api/trending');
+        const trending = await response.json();
+
+        if (trending.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="loading">No games currently trending. Checking every hour.</td></tr>';
+            return;
+        }
+
+        renderTrending(trending);
+    } catch (error) {
+        console.error('Error loading trending:', error);
+        tbody.innerHTML = '<tr><td colspan="4" class="loading">Error loading trends.</td></tr>';
+    }
+}
+
+function renderTrending(trending) {
+    const tbody = document.getElementById('trending-tbody');
+
+    tbody.innerHTML = trending.map(game => {
+        const date = new Date(game.trending_since).toLocaleDateString(undefined, {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+
+        let postingStatus = 'Normal Rotation';
+        if (game.post_count_override > 0) {
+            postingStatus = `✨ Boosted (2x/day)`;
+        } else if (game.game_id === '32399' || game.game_id === '516575') {
+            postingStatus = 'Fixed Slot (2x/day)';
+        }
+
+        return `
+            <tr>
+                <td><span style="font-weight: 600; color: var(--cf-blue);">${escapeHtml(game.game_name)}</span></td>
+                <td>${(game.current_viewers || 0).toLocaleString()} views</td>
+                <td style="color: var(--text-secondary); font-size: 13px;">${date}</td>
+                <td><span class="status-badge" style="background: rgba(243, 128, 32, 0.1); color: #f38020; border: 1px solid rgba(243, 128, 32, 0.2);">${postingStatus}</span></td>
+            </tr>
+        `;
+    }).join('');
 }
 
 // Load recent uploads
