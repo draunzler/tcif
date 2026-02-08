@@ -10,13 +10,14 @@ from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
 from app.clips import get_top_games, get_top_clips_last_hour, get_game_viewers, get_top_clips_last_n_hours
-from app.game_manager import save_top_games, get_next_game_id
+from app.game_manager import save_top_games, get_next_game_id, load_top_games
 from app.downloader import download_twitch_clip
 from app.database import (
     save_game_stats, get_game_stats_one_hour_ago, 
     update_trending_status, get_trending_leaderboard,
     get_trending_game_by_id, set_game_post_override,
-    add_clip, update_upload_status
+    add_clip, update_upload_status, is_clip_processed,
+    get_recent_clips
 )
 
 load_dotenv()
@@ -171,109 +172,135 @@ def get_game_to_post():
 
 def download_clips():
     """
-    Download clips from the next game in rotation.
-    Runs hourly.
+    Download clips based on strict quotas and >1500 views requirement.
+    8 total per day:
+    - 2 CS
+    - 2 Valorant
+    - 2 Trending (if available, else 2 General)
+    - 2 General (or more to reach 8 total)
     """
     logger.info("="*80)
-    logger.info(f"⬇️  Downloading clips - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"⬇️  Checking for qualified clips (>1500 views) - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("="*80)
     
     try:
-        # Determine which game to post
-        game_id, game_name = get_game_to_post()
+        # 1. Total Daily Check
+        recent_clips = get_recent_clips(limit=24) # check plenty
+        now_utc = datetime.utcnow()
+        posted_today = [c for c in recent_clips if (now_utc - datetime.fromisoformat(c['downloaded_at'].replace('Z', '+00:00'))).total_seconds() < 86400]
         
-        if not game_id:
+        if len(posted_today) >= 8:
+            logger.info(f"🚫 Daily limit of 8 videos already reached. Skipping scanning.")
             return
+
+        # 2. Count what we have per category for today
+        cs_today = [c for c in posted_today if c['game_id'] == '32399']
+        val_today = [c for c in posted_today if c['game_id'] == '516575']
         
-        logger.info(f"🎮 Selected game: {game_name} (ID: {game_id})")
+        leaderboard = get_trending_leaderboard()
+        trending_ids = [tg['game_id'] for tg in leaderboard]
+        trending_today = [c for c in posted_today if c['game_id'] in trending_ids and c['game_id'] not in ['32399', '516575']]
         
-        # Check if it's a trending game to fetch the right clips
-        existing_trend = get_trending_game_by_id(game_id)
-        if existing_trend and existing_trend.get('is_trending'):
-            logger.info("🔍 Fetching top clips from the last 3 hours (Trending rule)...")
-            clips = get_top_clips_last_n_hours(game_id=game_id, hours=3, limit=10)
-        else:
-            logger.info("🔍 Fetching top clips from the last hour...")
-            clips = get_top_clips_last_hour(game_id=game_id, limit=10)
+        general_today = [c for c in posted_today if c['game_id'] not in trending_ids and c['game_id'] not in ['32399', '516575']]
+
+        logger.info(f"📊 Activity Today: CS:{len(cs_today)} Val:{len(val_today)} Trending:{len(trending_today)} General:{len(general_today)}")
+
+        # 3. Determine which category to hunt for
+        targets = [] # list of (id_list, name, quota)
         
-        if not clips:
-            logger.warning(f"❌ No clips found in the last hour for {game_name}.")
-            return
-        
-        # Display the list of clips
-        logger.info(f"📊 Found {len(clips)} clip(s):")
-        logger.info("=" * 80)
-        
-        for i, clip in enumerate(clips, 1):
-            logger.info(f"{i}. {clip['title']}")
-            logger.info(f"   👤 Creator: {clip['creator_name']} | 📺 Broadcaster: {clip['broadcaster_name']}")
-            logger.info(f"   👁️  Views: {clip['view_count']:,} | ⏱️  Duration: {clip['duration']:.1f}s")
-            logger.info(f"   🔗 {clip['url']}")
-            logger.info("-" * 80)
-        
-        # Download the top clip
-        top_clip = clips[0]
-        logger.info(f"⬇️  Downloading top clip: \"{top_clip['title']}\"")
-        
-        clip_url = top_clip['url']
-        
-        # Add timestamp and game name to filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        safe_game_name = "".join(c for c in game_name if c.isalnum() or c in (' ', '-', '_')).strip()
-        output_filename = f"{timestamp}_{safe_game_name}_{top_clip['id']}.mp4"
-        
-        # Ensure downloads directory exists
-        os.makedirs("/app/downloads", exist_ok=True)
-        video_output_path = os.path.join("/app/downloads", output_filename)
-        
-        success = download_twitch_clip(clip_url, video_output_path)
-        
-        if success:
-            logger.info(f"✅ Successfully downloaded to: {output_filename}")
+        # Priority 1: CS
+        if len(cs_today) < 2:
+            targets.append((['32399'], 'Counter-Strike', 2 - len(cs_today)))
             
-            # Add to database
-            from app.database import add_clip, update_upload_status
+        # Priority 2: Valorant
+        if len(val_today) < 2:
+            targets.append((['516575'], 'Valorant', 2 - len(val_today)))
             
-            # Add game_name to clip data
-            top_clip['game_name'] = game_name
-            top_clip['game_id'] = game_id
+        # Priority 3: Trending
+        if len(trending_today) < 2 and trending_ids:
+            # Filter out CS/Val from trending if they overlap
+            actual_trend_ids = [tid for tid in trending_ids if tid not in ['32399', '516575']]
+            if actual_trend_ids:
+                targets.append((actual_trend_ids, 'Trending', 2 - len(trending_today)))
+        
+        # Priority 4: General (Top Games)
+        quota_remaining = 8 - len(posted_today)
+        # We only hunt for general if we have slots left after priority targets
+        # Or if we've already filled priority and still have total slots.
+        if quota_remaining > 0:
+            managed_games = load_top_games()
+            general_ids = [g['id'] for g in managed_games if g['id'] not in ['32399', '516575'] and g['id'] not in trending_ids]
+            if general_ids:
+                targets.append((general_ids, 'General', quota_remaining))
+
+        # 4. Loop through targets and try to find ONE qualifying clip per run
+        # This prevents posting 5 videos at once if we've been offline.
+        processed_count = 0
+        for ids, cat_name, needed in targets:
+            if processed_count > 0: break # Only 1 clip per 30 min run to keep it snappy
             
-            clip_db_id = add_clip(top_clip, video_output_path)
-            logger.info(f"📝 Saved to database (ID: {clip_db_id})")
+            logger.info(f"🎯 Hunting for {cat_name} (Need {needed} more today)...")
             
-            # Check if YouTube is connected and upload
-            from app.youtube_auth import is_authenticated
-            from app.youtube_uploader import upload_video
-            from pathlib import Path
-            
-            if is_authenticated():
-                logger.info("📤 YouTube connected - uploading video...")
+            for g_id in ids:
+                # Find game name
+                g_name = cat_name
+                if cat_name in ['Trending', 'General']:
+                    # Try to find specific name if available
+                    if cat_name == 'Trending':
+                        g_info = next((t for t in leaderboard if t['game_id'] == g_id), None)
+                        g_name = g_info['game_name'] if g_info else cat_name
+                    else:
+                        g_info = next((g for g in managed_games if g['id'] == g_id), None)
+                        g_name = g_info['name'] if g_info else cat_name
+
+                # Fetch and filter
+                clips = get_top_clips_last_n_hours(game_id=g_id, hours=6, limit=10)
+                qualified = [c for c in clips if c['view_count'] >= 1500 and not is_clip_processed(c['id'])]
                 
-                video_path = Path("/app/downloads") / output_filename
-                upload_success, youtube_video_id, error = upload_video(str(video_path), top_clip)
-                
-                if upload_success:
-                    update_upload_status(top_clip['id'], youtube_video_id, 'uploaded')
-                    logger.info(f"🎉 Uploaded to YouTube: https://youtube.com/watch?v={youtube_video_id}")
+                if qualified:
+                    best_clip = qualified[0]
+                    logger.info(f"✨ Found candidate: \"{best_clip['title']}\" ({best_clip['view_count']:,} views)")
                     
-                    # Delete video file after successful upload to save disk space
-                    try:
-                        video_path.unlink()
-                        logger.info(f"🗑️  Deleted local file: {output_filename} (saved disk space)")
-                    except Exception as delete_error:
-                        logger.warning(f"⚠️  Could not delete file {output_filename}: {delete_error}")
-                else:
-                    update_upload_status(top_clip['id'], None, 'failed', error)
-                    logger.error(f"❌ YouTube upload failed: {error}")
-                    logger.info(f"📁 Keeping local file: {output_filename}")
-            else:
-                logger.info("ℹ️  YouTube not connected - skipping upload")
-                update_upload_status(top_clip['id'], None, 'pending')
-        else:
-            logger.error(f"❌ Failed to download clip")
+                    # Download and process
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    safe_game_name = "".join(c for c in g_name if c.isalnum() or c in (' ', '-', '_')).strip()
+                    output_filename = f"{timestamp}_{safe_game_name}_{best_clip['id']}.mp4"
+                    
+                    os.makedirs("/app/downloads", exist_ok=True)
+                    video_output_path = os.path.join("/app/downloads", output_filename)
+                    
+                    if download_twitch_clip(best_clip['url'], video_output_path):
+                        best_clip['game_name'] = g_name
+                        best_clip['game_id'] = g_id
+                        
+                        clip_db_id = add_clip(best_clip, video_output_path)
+                        
+                        from app.youtube_auth import is_authenticated
+                        from app.youtube_uploader import upload_video
+                        from pathlib import Path
+                        
+                        if is_authenticated():
+                            upload_success, yt_id, err = upload_video(video_output_path, best_clip)
+                            if upload_success:
+                                update_upload_status(best_clip['id'], yt_id, 'uploaded')
+                                logger.info(f"🎉 Posted to YT: https://youtube.com/watch?v={yt_id}")
+                                try: Path(video_output_path).unlink()
+                                except: pass
+                            else:
+                                update_upload_status(best_clip['id'], None, 'failed', err)
+                        else:
+                            update_upload_status(best_clip['id'], None, 'pending')
+                        
+                        processed_count += 1
+                        break # Found one, move out
+                    else:
+                        logger.error(f"❌ Failed to download qualified clip")
             
+        if processed_count == 0:
+            logger.info("💤 No qualifying clips (>= 1500 views) found for needed categories.")
+
     except Exception as e:
-        logger.error(f"❌ Error downloading clips: {e}", exc_info=True)
+        logger.error(f"❌ Error in targeted download loop: {e}", exc_info=True)
 
 
 
@@ -314,12 +341,12 @@ def main():
         replace_existing=True
     )
     
-    # Schedule clip downloads every 3 hours (to match 8/day limit)
+    # Schedule clip downloads every 30 minutes to check for qualified candidates
     scheduler.add_job(
         download_clips,
-        trigger=CronTrigger(hour='*/3', minute=30),  # Every 3 hours at :30
+        trigger=CronTrigger(minute='0,30'),  # Twice an hour
         id='download_clips',
-        name='Download and post clips',
+        name='Download qualified clips (Strict Quota)',
         replace_existing=True
     )
     
