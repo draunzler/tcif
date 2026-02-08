@@ -2,32 +2,36 @@
 
 let viewsChart = null;
 let watchTimeChart = null;
+let currentTab = 'clips';
+let clipsData = [];
+let youtubeVideos = [];
 
 // Helper to create skeleton row for table
 const getSkeletonRow = () => `
     <tr>
-        <td><div class="skeleton skeleton-text" style="width: 80%"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 60%"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 50%"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 40%"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 70%"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 60%; border-radius: 12px;"></div></td>
-        <td><div class="skeleton skeleton-text" style="width: 30%"></div></td>
+        <td class="video-thumbnail-cell"><div class="skeleton" style="width: 100px; height: 56px; border-radius: 4px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 80%; height: 20px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 50%; height: 20px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 40%; height: 20px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 40%; height: 20px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 70%; height: 20px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 60%; height: 24px; border-radius: 12px;"></div></td>
+        <td><div class="skeleton skeleton-text" style="width: 30%; height: 32px; border-radius: 6px;"></div></td>
     </tr>
 `;
 
-// Refresh stats and uploads data
-async function refreshData() {
-    // We don't show skeletons on every auto-refresh to avoid flicker
-    // but we do on manual refresh or first load
-    const isInitial = document.querySelectorAll('.skeleton').length > 0;
+const getGameSkeleton = () => `
+    <div class="skeleton-leaderboard skeleton"></div>
+`;
 
+// Refresh stats and uploads data
+async function refreshData(showSkeleton = false) {
     await Promise.all([
         loadStats(),
-        loadUploads(isInitial),
-        loadAnalytics(isInitial),
-        loadTrending(isInitial),
-        loadTopGames(isInitial)
+        loadUploads(showSkeleton),
+        loadAnalytics(showSkeleton),
+        loadTrending(showSkeleton),
+        loadTopGames(showSkeleton)
     ]);
 }
 
@@ -92,29 +96,38 @@ function connectYouTube() {
 
 // Disconnect from YouTube
 async function disconnectYouTube() {
-    if (!confirm('Are you sure you want to disconnect YouTube?')) {
-        return;
-    }
+    if (!confirm('Are you sure you want to disconnect YouTube?')) return;
 
     try {
-        const response = await fetch('/api/disconnect', {
-            method: 'POST'
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-            await refreshData();
-        } else {
-            alert('Failed to disconnect: ' + (data.error || 'Unknown error'));
-        }
+        await fetch('/auth/youtube/disconnect');
+        window.location.reload();
     } catch (error) {
-        console.error('Error disconnecting:', error);
-        alert('Failed to disconnect from YouTube');
+        console.error('Error disconnecting YouTube:', error);
     }
 }
 
-// Load YouTube Analytics
+// Switch between Clips and YouTube tabs
+function switchTab(tab) {
+    currentTab = tab;
+
+    // Update tabs UI
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(`tab-${tab}`).classList.add('active');
+
+    // Render the active dataset
+    if (tab === 'clips') {
+        renderClips(clipsData);
+    } else {
+        renderYouTubeVideos(youtubeVideos);
+    }
+
+    // Re-trigger search after switching tabs
+    const searchQuery = document.getElementById('clip-search').value;
+    if (searchQuery) {
+        triggerSearch(searchQuery);
+    }
+}
+
 async function loadAnalytics(showSkeleton = false) {
     const statusHero = document.getElementById('youtube-status');
     if (!statusHero.classList.contains('connected')) {
@@ -173,22 +186,26 @@ function renderAnalytics(data) {
 
 function renderTimeSeriesChart(canvasId, label, labels, data, color, chartInstance, setInstance) {
     const ctx = document.getElementById(canvasId).getContext('2d');
+    const formattedLabels = labels.map(l => {
+        const d = new Date(l);
+        return d.toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            month: 'short',
+            day: 'numeric'
+        });
+    });
 
     if (chartInstance) {
-        chartInstance.destroy();
+        chartInstance.data.labels = formattedLabels;
+        chartInstance.data.datasets[0].data = data;
+        chartInstance.update('none'); // silent update
+        return;
     }
 
     const newChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: labels.map(l => {
-                const d = new Date(l);
-                return d.toLocaleDateString('en-IN', {
-                    timeZone: 'Asia/Kolkata',
-                    month: 'short',
-                    day: 'numeric'
-                });
-            }),
+            labels: formattedLabels,
             datasets: [{
                 label: label,
                 data: data,
@@ -274,9 +291,58 @@ function formatIST(dateString) {
     });
 }
 
+// Render a reusable leaderboard item
+function createLeaderboardItem(game, rank, options = {}) {
+    let artUrl = game.box_art_url || '';
+
+    if (!artUrl && (game.id || game.game_id)) {
+        const id = game.id || game.game_id;
+        artUrl = `https://static-cdn.jtvnw.net/ttv-boxart/${id}-{width}x{height}.jpg`;
+    }
+
+    if (!artUrl) {
+        artUrl = 'https://static-cdn.jtvnw.net/ttv-static/404_boxart-{width}x{height}.jpg';
+    }
+
+    artUrl = artUrl
+        .replace('{width}', '120')
+        .replace('{height}', '160');
+
+    const meta = options.meta || '';
+
+    return `
+        <div class="leaderboard-item">
+            <div class="leaderboard-rank">#${rank}</div>
+            <div class="leaderboard-art-container">
+                <img src="${artUrl}" alt="${escapeHtml(game.name || game.game_name)}" class="leaderboard-art" loading="lazy">
+            </div>
+            <div class="leaderboard-info">
+                <div class="leaderboard-name">${escapeHtml(game.name || game.game_name)}</div>
+                <div class="leaderboard-meta">
+                    <span>${meta}</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 // Render a reusable game grid card
 function createGameCard(game, options = {}) {
-    const artUrl = game.box_art_url
+    let artUrl = game.box_art_url || '';
+
+    // Generate art URL if missing but ID exists
+    if (!artUrl && (game.id || game.game_id)) {
+        const id = game.id || game.game_id;
+        artUrl = `https://static-cdn.jtvnw.net/ttv-boxart/${id}-{width}x{height}.jpg`;
+    }
+
+    // Fallback image
+    if (!artUrl) {
+        artUrl = 'https://static-cdn.jtvnw.net/ttv-static/404_boxart-{width}x{height}.jpg';
+    }
+
+    // Replace width/height
+    artUrl = artUrl
         .replace('{width}', '285')
         .replace('{height}', '380');
 
@@ -302,19 +368,33 @@ function createGameCard(game, options = {}) {
 // Load top games
 async function loadTopGames(showSkeleton = false) {
     const grid = document.getElementById('top-games-grid');
-    if (showSkeleton) {
-        grid.innerHTML = '<div class="loading-container"><div class="skeleton-chart" style="height: 200px"></div></div>';
+    if (showSkeleton || !grid.innerHTML || grid.querySelector('.loading-container')) {
+        grid.innerHTML = getGameSkeleton().repeat(8);
     }
 
     try {
         const response = await fetch('/api/top-games');
-        const result = await response.json();
-        const games = result.data;
+        const data = await response.json();
 
-        grid.innerHTML = games.map(game => createGameCard(game)).join('');
+        // Defensive check for the games list
+        let games = [];
+        if (Array.isArray(data)) {
+            games = data;
+        } else if (data && Array.isArray(data.games)) {
+            games = data.games;
+        } else if (data && Array.isArray(data.data)) {
+            games = data.data;
+        }
+
+        if (games.length === 0) {
+            grid.innerHTML = '<div class="loading-container">No top games found.</div>';
+            return;
+        }
+
+        grid.innerHTML = games.map((game, index) => createLeaderboardItem(game, index + 1)).join('');
     } catch (error) {
         console.error('Error loading top games:', error);
-        grid.innerHTML = '<div class="loading-container">Error loading top games.</div>';
+        grid.innerHTML = '<div class="loading-container">Error loading top games. See console for details.</div>';
     }
 }
 
@@ -322,23 +402,24 @@ async function loadTopGames(showSkeleton = false) {
 async function loadTrending(showSkeleton = false) {
     const grid = document.getElementById('trending-grid');
 
-    if (showSkeleton) {
-        grid.innerHTML = '<div class="loading-container"><div class="skeleton-chart" style="height: 200px"></div></div>';
+    if (showSkeleton || !grid.innerHTML || grid.querySelector('.loading-container')) {
+        grid.innerHTML = getGameSkeleton().repeat(4);
     }
 
     try {
         const response = await fetch('/api/trending');
-        const trending = await response.json();
+        const data = await response.json();
+
+        const trending = Array.isArray(data) ? data : (data.data || []);
 
         if (trending.length === 0) {
             grid.innerHTML = '<div class="loading-container">No games currently trending. Checking every hour.</div>';
             return;
         }
 
-        grid.innerHTML = trending.map(game => {
+        grid.innerHTML = trending.map((game, index) => {
             const viewers = (game.current_viewers || 0).toLocaleString();
-            return createGameCard(game, {
-                isTrending: true,
+            return createLeaderboardItem(game, index + 1, {
                 meta: `🔥 ${viewers} viewers`
             });
         }).join('');
@@ -348,7 +429,7 @@ async function loadTrending(showSkeleton = false) {
     }
 }
 
-// Load recent uploads
+// Load both local clips and YouTube videos
 async function loadUploads(showSkeleton = false) {
     const tbody = document.getElementById('uploads-tbody');
 
@@ -357,39 +438,72 @@ async function loadUploads(showSkeleton = false) {
     }
 
     try {
-        const response = await fetch('/api/uploads?limit=50');
-        const clips = await response.json();
+        // Fetch both datasets in parallel
+        const [clipsRes, youtubeRes] = await Promise.all([
+            fetch('/api/uploads?limit=50'),
+            fetch('/api/youtube-videos?limit=50')
+        ]);
 
-        if (clips.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="loading">No records found. Start your first download to see activity.</td></tr>';
-            return;
+        clipsData = await clipsRes.json();
+        const youtubePayload = await youtubeRes.json();
+        youtubeVideos = Array.isArray(youtubePayload) ? youtubePayload : (youtubePayload.items || []);
+
+        // Initial render based on active tab
+        if (currentTab === 'clips') {
+            renderClips(clipsData);
+        } else {
+            renderYouTubeVideos(youtubeVideos);
         }
-
-        renderClips(clips);
 
         // Setup Search
         const searchInput = document.getElementById('clip-search');
-        searchInput.oninput = (e) => {
-            const query = e.target.value.toLowerCase();
-            const filtered = clips.filter(c =>
-                c.title.toLowerCase().includes(query) ||
-                (c.game_name && c.game_name.toLowerCase().includes(query)) ||
-                (c.broadcaster_name && c.broadcaster_name.toLowerCase().includes(query))
-            );
-            renderClips(filtered);
-        };
+        searchInput.oninput = (e) => triggerSearch(e.target.value);
 
     } catch (error) {
         console.error('Error loading uploads:', error);
         tbody.innerHTML =
-            '<tr><td colspan="7" class="loading">Error syncing records. Please try again.</td></tr>';
+            '<tr><td colspan="8" class="loading">Error syncing records. Please try again.</td></tr>';
+    }
+}
+
+function triggerSearch(query) {
+    const q = query.toLowerCase();
+    if (currentTab === 'clips') {
+        const filtered = clipsData.filter(c =>
+            c.title.toLowerCase().includes(q) ||
+            (c.game_name && c.game_name.toLowerCase().includes(q))
+        );
+        renderClips(filtered);
+    } else {
+        const filtered = youtubeVideos.filter(v =>
+            v.title.toLowerCase().includes(q)
+        );
+        renderYouTubeVideos(filtered);
     }
 }
 
 function renderClips(clips) {
+    const thead = document.querySelector('#uploads-table thead');
     const tbody = document.getElementById('uploads-tbody');
+
+    // Only update headers if needed to prevent flicker
+    if (thead.dataset.activeTab !== 'clips') {
+        thead.innerHTML = `
+            <tr>
+                <th>Video Title</th>
+                <th>Category</th>
+                <th>Creator</th>
+                <th>Views</th>
+                <th>Date Added</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        `;
+        thead.dataset.activeTab = 'clips';
+    }
+
     if (clips.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="loading">No clips match your search.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="loading">No local clips found.</td></tr>';
         return;
     }
 
@@ -405,9 +519,8 @@ function renderClips(clips) {
             actionBtn = `<a href="${clip.url}" target="_blank" class="btn btn-secondary btn-sm">Original</a>`;
         }
 
-        // Add Delete Button for non-uploaded clips
         if (clip.upload_status !== 'uploaded') {
-            actionBtn += ` <button onclick="deleteClip('${clip.clip_id}')" class="btn btn-danger btn-sm" title="Delete file & record">🗑️</button>`;
+            actionBtn += ` <button onclick="deleteClip('${clip.clip_id}')" class="btn btn-danger btn-sm" title="Delete record">🗑️</button>`;
         }
 
         return `
@@ -416,6 +529,56 @@ function renderClips(clips) {
                 <td><span style="color: var(--cf-blue); font-size: 13px;">${escapeHtml(clip.game_name || 'N/A')}</span></td>
                 <td>${escapeHtml(clip.broadcaster_name || 'N/A')}</td>
                 <td>${(clip.view_count || 0).toLocaleString()}</td>
+                <td style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">${date}</td>
+                <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                <td style="white-space: nowrap;">${actionBtn}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function renderYouTubeVideos(videos) {
+    const thead = document.querySelector('#uploads-table thead');
+    const tbody = document.getElementById('uploads-tbody');
+
+    // Only update headers if needed to prevent flicker
+    if (thead.dataset.activeTab !== 'youtube') {
+        thead.innerHTML = `
+            <tr>
+                <th>Preview</th>
+                <th>Video Title</th>
+                <th>Views</th>
+                <th>Likes</th>
+                <th>Comments</th>
+                <th>Published</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        `;
+        thead.dataset.activeTab = 'youtube';
+    }
+
+    if (videos.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="loading">No videos found on YouTube.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = videos.map(video => {
+        const date = formatIST(video.published_at);
+        const statusClass = `status-${video.status}`;
+        const statusText = video.status.charAt(0).toUpperCase() + video.status.slice(1);
+
+        const actionBtn = `<a href="${video.url}" target="_blank" class="btn btn-secondary btn-sm">Watch</a>`;
+
+        return `
+            <tr>
+                <td class="video-thumbnail-cell">
+                    <img src="${video.thumbnail}" alt="thumbnail" class="video-thumbnail">
+                </td>
+                <td><div style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500;">${escapeHtml(video.title)}</div></td>
+                <td style="font-weight: 600;">${(video.view_count || 0).toLocaleString()}</td>
+                <td style="font-weight: 600; color: var(--cf-blue);">${(video.like_count || 0).toLocaleString()}</td>
+                <td style="font-weight: 600; color: var(--text-secondary);">${(video.comment_count || 0).toLocaleString()}</td>
                 <td style="color: var(--text-secondary); font-size: 13px; white-space: nowrap;">${date}</td>
                 <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                 <td style="white-space: nowrap;">${actionBtn}</td>
@@ -454,8 +617,8 @@ function checkUrlParams() {
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', () => {
     checkUrlParams();
-    refreshData();
-    setInterval(refreshData, 30000);
+    refreshData(true); // First load with skeletons
+    setInterval(() => refreshData(false), 30000); // Background refresh silent
 
     // Analytics days listener
     document.getElementById('analytics-days').addEventListener('change', () => loadAnalytics(true));

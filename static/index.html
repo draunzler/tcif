@@ -135,30 +135,54 @@
                     </div>
                 </section>
 
-                <!-- Top Games Section -->
-                <section class="content-section-none" style="margin-bottom: 48px; background: transparent; border: none; box-shadow: none;">
-                    <div class="section-header" style="background: transparent; padding-left: 0;">
-                        <h3>🌟 Top Games</h3>
-                    </div>
-                    <div class="game-grid" id="top-games-grid">
-                        <div class="loading-container">Loading top games...</div>
-                    </div>
-                </section>
+                <!-- Games Horizontal Row -->
+                <div class="games-row"
+                    style="display: grid; grid-template-columns: repeat(auto-fit, minmax(600px, 1fr)); gap: 40px;">
+                    <!-- Trending Games Section -->
+                    <section class="content-section-none"
+                        style="background: transparent; border: none; box-shadow: none;">
+                        <div class="section-header" style="background: transparent; padding-left: 0;">
+                            <h3>🔥 Trending Games</h3>
+                        </div>
+                        <div class="game-grid" id="trending-grid">
+                            <div class="skeleton-card">
+                                <div class="skeleton skeleton-art"></div>
+                                <div class="skeleton skeleton-name"></div>
+                                <div class="skeleton" style="height: 14px; width: 40%; margin: 0 20px 20px;"></div>
+                            </div>
+                        </div>
+                    </section>
 
-                <!-- Trending Games Section -->
-                <section class="content-section-none" style="margin-bottom: 48px; background: transparent; border: none; box-shadow: none;">
-                    <div class="section-header" style="background: transparent; padding-left: 0;">
-                        <h3>🔥 Trending Games</h3>
-                    </div>
-                    <div class="game-grid" id="trending-grid">
-                        <div class="loading-container">Calculating trends...</div>
-                    </div>
-                </section>
+                    <!-- Top Games Section -->
+                    <section class="content-section-none"
+                        style="background: transparent; border: none; box-shadow: none;">
+                        <div class="section-header" style="background: transparent; padding-left: 0;">
+                            <h3>🌟 Top Games</h3>
+                        </div>
+                        <div class="game-grid" id="top-games-grid">
+                            <div class="skeleton-card">
+                                <div class="skeleton skeleton-art"></div>
+                                <div class="skeleton skeleton-name"></div>
+                                <div class="skeleton" style="height: 14px; width: 40%; margin: 0 20px 20px;"></div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
 
                 <!-- Recent Uploads Table -->
                 <section class="content-section">
                     <div class="section-header">
-                        <h3>Recent Activity</h3>
+                        <div class="header-main">
+                            <h3>Activity Feed</h3>
+                            <div class="table-tabs">
+                                <button class="tab-btn active" onclick="switchTab('clips')" id="tab-clips">
+                                    Local Clips
+                                </button>
+                                <button class="tab-btn" onclick="switchTab('youtube')" id="tab-youtube">
+                                    YouTube Videos
+                                </button>
+                            </div>
+                        </div>
                         <div class="section-actions">
                             <button class="btn btn-secondary btn-sm" onclick="cleanupPending()"
                                 id="cleanup-pending-btn">
@@ -176,18 +200,34 @@
                         <table id="uploads-table">
                             <thead>
                                 <tr>
+                                    <th>Preview</th>
                                     <th>Video Title</th>
-                                    <th>Category</th>
-                                    <th>Creator</th>
                                     <th>Views</th>
-                                    <th>Date Added</th>
+                                    <th>Likes</th>
+                                    <th>Comments</th>
+                                    <th>Published Date</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="uploads-tbody">
                                 <tr>
-                                    <td colspan="7" class="loading">Fetching records...</td>
+                                    <div class="skeleton skeleton-text" style="width: 75%; height: 20px;"></div>
+                                    </td>
+                                    <td>
+                                        <div class="skeleton skeleton-text" style="width: 45%; height: 20px;"></div>
+                                    </td>
+                                    <td>
+                                        <div class="skeleton skeleton-text" style="width: 65%; height: 20px;"></div>
+                                    </td>
+                                    <td>
+                                        <div class="skeleton skeleton-text"
+                                            style="width: 55%; height: 24px; border-radius: 12px;"></div>
+                                    </td>
+                                    <td>
+                                        <div class="skeleton skeleton-text"
+                                            style="width: 25%; height: 32px; border-radius: 6px;"></div>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
