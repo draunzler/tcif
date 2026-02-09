@@ -329,7 +329,8 @@ def main():
         trigger=CronTrigger(hour='*'),  # Every hour
         id='update_top_games',
         name='Update top trending games',
-        replace_existing=True
+        replace_existing=True,
+        misfire_grace_time=3600
     )
     
     # Schedule trending calculation every hour
@@ -338,16 +339,18 @@ def main():
         trigger=CronTrigger(minute=5),  # 5 minutes past every hour
         id='calculate_trending',
         name='Calculate trending games',
-        replace_existing=True
+        replace_existing=True,
+        misfire_grace_time=3600
     )
     
     # Schedule clip downloads every 3 hours to check for qualified candidates
     scheduler.add_job(
         download_clips,
-        trigger=CronTrigger(hour='*/3'),  # Every 3 hours
+        trigger=CronTrigger(hour='*/3', minute=10),  # Every 3 hours, at 10 mins past
         id='download_clips',
         name='Download qualified clips (Strict Quota)',
-        replace_existing=True
+        replace_existing=True,
+        misfire_grace_time=3600
     )
     
     logger.info("✅ Scheduler started! Running continuously...")
