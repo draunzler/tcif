@@ -253,9 +253,16 @@ def download_clips():
                         g_info = next((g for g in managed_games if g['id'] == g_id), None)
                         g_name = g_info['name'] if g_info else cat_name
 
-                # Fetch and filter
-                clips = get_top_clips_last_n_hours(game_id=g_id, hours=6, limit=10)
-                qualified = [c for c in clips if c['view_count'] >= 1500 and not is_clip_processed(c['id'])]
+                # Fetch and filter with expanding time range
+                qualified = []
+                for search_hours in [6, 12, 24]:
+                    logger.info(f"   - Scanning {g_name} (ID: {g_id}) in the last {search_hours} hours...")
+                    clips = get_top_clips_last_n_hours(game_id=g_id, hours=search_hours, limit=10)
+                    qualified = [c for c in clips if c['view_count'] >= 1500 and not is_clip_processed(c['id'])]
+                    if qualified:
+                        if search_hours > 6:
+                            logger.info(f"🔍 Found {len(qualified)} qualified clips by expanding range to {search_hours}h")
+                        break
                 
                 if qualified:
                     best_clip = qualified[0]
