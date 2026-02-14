@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from app.clips import get_top_games, get_top_clips_last_hour, get_game_viewers, get_top_clips_last_n_hours
 from app.game_manager import save_top_games, get_next_game_id, load_top_games
 from app.downloader import download_twitch_clip
+from app.video_processor import VideoProcessor
 from app.database import (
     save_game_stats, get_game_stats_one_hour_ago, 
     update_trending_status, get_trending_leaderboard,
@@ -172,20 +173,19 @@ def get_game_to_post():
 
 def download_clips():
     """
-    Download clips based on strict quotas and >1500 views requirement.
-    8 total per day:
-    - 2 CS
-    - 2 Valorant
-    - 2 Trending (if available, else 2 General)
-    - 2 General (or more to reach 8 total)
+    Download clips based on new algorithm:
+    - 4-day search range (96 hours)
+    - Always 2 CS (32399) and 2 Valorant (516575) daily
+    - Pick top viewed Clip
+    - 8 total per day
     """
     logger.info("="*80)
-    logger.info(f"⬇️  Checking for qualified clips (>1500 views) - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"⬇️  Searching for top clips (Last 4 days) - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("="*80)
     
     try:
         # 1. Total Daily Check
-        recent_clips = get_recent_clips(limit=24) # check plenty
+        recent_clips = get_recent_clips(limit=50) # check plenty for 4 days
         now_utc = datetime.utcnow()
         posted_today = [c for c in recent_clips if (now_utc - datetime.fromisoformat(c['downloaded_at'].replace('Z', '+00:00'))).total_seconds() < 86400]
         
@@ -193,118 +193,110 @@ def download_clips():
             logger.info(f"🚫 Daily limit of 8 videos already reached. Skipping scanning.")
             return
 
-        # 2. Count what we have per category for today
+        # 2. Quota Check for Today
         cs_today = [c for c in posted_today if c['game_id'] == '32399']
         val_today = [c for c in posted_today if c['game_id'] == '516575']
         
-        leaderboard = get_trending_leaderboard()
-        trending_ids = [tg['game_id'] for tg in leaderboard]
-        trending_today = [c for c in posted_today if c['game_id'] in trending_ids and c['game_id'] not in ['32399', '516575']]
+        target_game_id = None
+        target_game_name = None
         
-        general_today = [c for c in posted_today if c['game_id'] not in trending_ids and c['game_id'] not in ['32399', '516575']]
-
-        logger.info(f"📊 Activity Today: CS:{len(cs_today)} Val:{len(val_today)} Trending:{len(trending_today)} General:{len(general_today)}")
-
-        # 3. Determine which category to hunt for
-        targets = [] # list of (id_list, name, quota)
-        
-        # Priority 1: CS
         if len(cs_today) < 2:
-            targets.append((['32399'], 'Counter-Strike', 2 - len(cs_today)))
+            target_game_id = '32399'
+            target_game_name = 'Counter-Strike'
+            logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(cs_today)}/2)")
+        elif len(val_today) < 2:
+            target_game_id = '516575'
+            target_game_name = 'Valorant'
+            logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(val_today)}/2)")
+        else:
+            # If quotas met, pick from trending or rotation
+            leaderboard = get_trending_leaderboard()
+            if leaderboard:
+                actual_trends = [tg for tg in leaderboard if tg['game_id'] not in ['32399', '516575']]
+                if actual_trends:
+                    target_game_id = actual_trends[0]['game_id']
+                    target_game_name = actual_trends[0]['game_name']
+                    logger.info(f"🎯 Target: Trending - {target_game_name}")
             
-        # Priority 2: Valorant
-        if len(val_today) < 2:
-            targets.append((['516575'], 'Valorant', 2 - len(val_today)))
-            
-        # Priority 3: Trending
-        if len(trending_today) < 2 and trending_ids:
-            # Filter out CS/Val from trending if they overlap
-            actual_trend_ids = [tid for tid in trending_ids if tid not in ['32399', '516575']]
-            if actual_trend_ids:
-                targets.append((actual_trend_ids, 'Trending', 2 - len(trending_today)))
+            if not target_game_id:
+                target_game_id = get_next_game_id()
+                managed_games = load_top_games()
+                g_info = next((g for g in managed_games if g['id'] == target_game_id), None)
+                target_game_name = g_info['name'] if g_info else "Rotation"
+                logger.info(f"🎯 Target: Rotation - {target_game_name}")
+
+        # 3. Fetch Top Clip from Last 4 Days
+        logger.info(f"🔍 Fetching top clips for {target_game_name} (ID: {target_game_id}) from last 4 days...")
+        clips = get_top_clips_last_n_hours(game_id=target_game_id, hours=96, limit=50)
         
-        # Priority 4: General (Top Games)
-        quota_remaining = 8 - len(posted_today)
-        # We only hunt for general if we have slots left after priority targets
-        # Or if we've already filled priority and still have total slots.
-        if quota_remaining > 0:
-            managed_games = load_top_games()
-            general_ids = [g['id'] for g in managed_games if g['id'] not in ['32399', '516575'] and g['id'] not in trending_ids]
-            if general_ids:
-                targets.append((general_ids, 'General', quota_remaining))
+        # Filter out already processed
+        qualified = [c for c in clips if not is_clip_processed(c['id'])]
+        
+        if not qualified:
+            logger.info(f"💤 No new clips found for {target_game_name} in the last 4 days.")
+            return
 
-        # 4. Loop through targets and try to find ONE qualifying clip per run
-        # This prevents posting 5 videos at once if we've been offline.
-        processed_count = 0
-        for ids, cat_name, needed in targets:
-            if processed_count > 0: break # Only 1 clip per 30 min run to keep it snappy
-            
-            logger.info(f"🎯 Hunting for {cat_name} (Need {needed} more today)...")
-            
-            for g_id in ids:
-                # Find game name
-                g_name = cat_name
-                if cat_name in ['Trending', 'General']:
-                    # Try to find specific name if available
-                    if cat_name == 'Trending':
-                        g_info = next((t for t in leaderboard if t['game_id'] == g_id), None)
-                        g_name = g_info['game_name'] if g_info else cat_name
-                    else:
-                        g_info = next((g for g in managed_games if g['id'] == g_id), None)
-                        g_name = g_info['name'] if g_info else cat_name
+        # Sort by view count descending and pick the top one
+        qualified.sort(key=lambda x: x['view_count'], reverse=True)
+        best_clip = qualified[0]
+        logger.info(f"✨ Best candidate: \"{best_clip['title']}\" ({best_clip['view_count']:,} views)")
 
-                # Fetch and filter with expanding time range
-                qualified = []
-                for search_hours in [6, 12, 24]:
-                    logger.info(f"   - Scanning {g_name} (ID: {g_id}) in the last {search_hours} hours...")
-                    clips = get_top_clips_last_n_hours(game_id=g_id, hours=search_hours, limit=10)
-                    qualified = [c for c in clips if c['view_count'] >= 1500 and not is_clip_processed(c['id'])]
-                    if qualified:
-                        if search_hours > 6:
-                            logger.info(f"🔍 Found {len(qualified)} qualified clips by expanding range to {search_hours}h")
-                        break
+        # 4. Download and Process
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_game_name = "".join(c for c in target_game_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        output_filename = f"{timestamp}_{safe_game_name}_{best_clip['id']}.mp4"
+        
+        # Ensure we are using the correct path (Docker context vs Local)
+        # Based on logs and previous code, /app/downloads seems to be the target
+        os.makedirs("/app/downloads", exist_ok=True)
+        video_output_path = os.path.join("/app/downloads", output_filename)
+        
+        if download_twitch_clip(best_clip['url'], video_output_path):
+            # Process video to vertical format with overlay
+            processed_output_path = video_output_path.replace(".mp4", "_processed.mp4")
+            processor = VideoProcessor()
+            
+            # broadcaster_name is needed for overlay
+            broadcaster = best_clip.get('broadcaster_name', 'Twitch')
+            logger.info(f"🎨 Processing clip for {broadcaster}...")
+            
+            if processor.process_video(video_output_path, processed_output_path, broadcaster):
+                # Use the processed video
+                try: 
+                    from pathlib import Path
+                    Path(video_output_path).unlink()
+                except: pass
+                video_output_path = processed_output_path
+                logger.info(f"✅ Video processed: {video_output_path}")
+            else:
+                logger.warning("⚠️ Processing failed, using original.")
+
+            best_clip['game_name'] = target_game_name
+            best_clip['game_id'] = target_game_id
+            
+            clip_db_id = add_clip(best_clip, video_output_path)
+            
+            # 5. Upload to YouTube
+            from app.youtube_auth import is_authenticated
+            from app.youtube_uploader import upload_video
+            from pathlib import Path
+            
+            if is_authenticated():
+                upload_success, yt_id, err = upload_video(video_output_path, best_clip)
+                if upload_success:
+                    update_upload_status(best_clip['id'], yt_id, 'uploaded')
+                    logger.info(f"🎉 Posted to YT: https://youtube.com/watch?v={yt_id}")
+                    try: Path(video_output_path).unlink()
+                    except: pass
+                else:
+                    update_upload_status(best_clip['id'], None, 'failed', err)
+                    logger.error(f"❌ Upload failed: {err}")
+            else:
+                update_upload_status(best_clip['id'], None, 'pending')
+                logger.warning("🕒 YT not authenticated, clip pending.")
                 
-                if qualified:
-                    best_clip = qualified[0]
-                    logger.info(f"✨ Found candidate: \"{best_clip['title']}\" ({best_clip['view_count']:,} views)")
-                    
-                    # Download and process
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    safe_game_name = "".join(c for c in g_name if c.isalnum() or c in (' ', '-', '_')).strip()
-                    output_filename = f"{timestamp}_{safe_game_name}_{best_clip['id']}.mp4"
-                    
-                    os.makedirs("/app/downloads", exist_ok=True)
-                    video_output_path = os.path.join("/app/downloads", output_filename)
-                    
-                    if download_twitch_clip(best_clip['url'], video_output_path):
-                        best_clip['game_name'] = g_name
-                        best_clip['game_id'] = g_id
-                        
-                        clip_db_id = add_clip(best_clip, video_output_path)
-                        
-                        from app.youtube_auth import is_authenticated
-                        from app.youtube_uploader import upload_video
-                        from pathlib import Path
-                        
-                        if is_authenticated():
-                            upload_success, yt_id, err = upload_video(video_output_path, best_clip)
-                            if upload_success:
-                                update_upload_status(best_clip['id'], yt_id, 'uploaded')
-                                logger.info(f"🎉 Posted to YT: https://youtube.com/watch?v={yt_id}")
-                                try: Path(video_output_path).unlink()
-                                except: pass
-                            else:
-                                update_upload_status(best_clip['id'], None, 'failed', err)
-                        else:
-                            update_upload_status(best_clip['id'], None, 'pending')
-                        
-                        processed_count += 1
-                        break # Found one, move out
-                    else:
-                        logger.error(f"❌ Failed to download qualified clip")
-            
-        if processed_count == 0:
-            logger.info("💤 No qualifying clips (>= 1500 views) found for needed categories.")
+        else:
+            logger.error(f"❌ Failed to download clip")
 
     except Exception as e:
         logger.error(f"❌ Error in targeted download loop: {e}", exc_info=True)
