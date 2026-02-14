@@ -2,9 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install ffmpeg (needed by yt-dlp for some video processing)
+# Install ffmpeg and OpenCV/MediaPipe system dependencies
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y \
+    ffmpeg \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

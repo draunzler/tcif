@@ -1,61 +1,211 @@
-import subprocess
+import cv2
+import numpy as np
+import mediapipe as mp
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Vertical output size (Shorts format)
+OUT_W = 1080
+OUT_H = 1920
+
+# 35% for facecam, 65% for gameplay
+TOP_H = int(OUT_H * 0.35)
+BOTTOM_H = int(OUT_H * 0.65)
+
+
 class VideoProcessor:
     def __init__(self):
-        self.logo_path = "/home/draunzler/Desktop/tcif/static/images/Twitch-Logo-PNG-Clip-Art-HD-Quality.png"
-        self.font_path = "/home/draunzler/Desktop/tcif/static/fonts/twitch.otf"
-        self.font_color = "0x6441A5"  # FFmpeg uses 0xRRGGBB
+        """Initialize MediaPipe Face Detection"""
+        self.mp_face_detection = mp.solutions.face_detection
+        self.face_detection = self.mp_face_detection.FaceDetection(
+            model_selection=1,
+            min_detection_confidence=0.5
+        )
 
-    def process_video(self, input_path: str, output_path: str, broadcaster_name: str) -> bool:
+    def process_video(self, input_path: str, output_path: str, broadcaster_name: str = None) -> bool:
         """
-        Converts video to 9:16 720p and overlays Twitch logo and broadcaster name.
-        Position: Centered horizontally, 40% from the bottom.
+        Process video to create YouTube Shorts (1080x1920).
+        
+        If a face is detected in the first frame:
+        - Top 35%: Facecam (cropped and resized)
+        - Bottom 65%: Gameplay (centered)
+        
+        If no face is detected:
+        - Top 17.5%: Blurred gameplay
+        - Middle 65%: Clear centered gameplay
+        - Bottom 17.5%: Blurred gameplay
+        
+        Args:
+            input_path: Path to input video file
+            output_path: Path to output video file
+            broadcaster_name: Optional broadcaster name (currently unused)
+        
+        Returns:
+            True if processing successful, False otherwise
         """
         if not os.path.exists(input_path):
             logger.error(f"Input file not found: {input_path}")
             return False
 
-        # FFmpeg filter string
-        # 1. Scale and crop to 9:16 (720x1280)
-        # 2. Overlay logo
-        # 3. Draw text
-        
-        # We need to escape the broadcaster name for drawtext
-        safe_name = broadcaster_name.replace("'", "\\'").replace(":", "\\:")
-        
-        # Horizontal center: (w-overlay_w)/2
-        # Vertical 40% from bottom: h - (h * 0.4) - overlay_h
-        
-        filter_complex = (
-            f"scale=ih*9/16:ih,scale=720:1280,setsar=1,"
-            f"movie='{self.logo_path}' [logo];"
-            f"[0:v][logo] overlay=(W-w)/2:H-(H*0.4)-h [overlaid];"
-            f"[overlaid] drawtext=fontfile='{self.font_path}':text='{safe_name}':"
-            f"fontcolor={self.font_color}:fontsize=48:x=(w-text_w)/2:y=H-(H*0.4)+20"
-        )
-
-        command = [
-            "ffmpeg", "-y",
-            "-i", input_path,
-            "-filter_complex", filter_complex,
-            "-c:a", "copy",  # Copy audio stream
-            output_path
-        ]
-
         try:
-            logger.info(f"Processing video: {input_path} -> {output_path}")
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            cap = cv2.VideoCapture(input_path)
+            if not cap.isOpened():
+                logger.error(f"Cannot open input video: {input_path}")
+                return False
+
+            fps = cap.get(cv2.CAP_PROP_FPS)
+
+            # Detect face in the first frame only
+            ret, first_frame = cap.read()
+            if not ret:
+                logger.error("Cannot read first frame from video")
+                cap.release()
+                return False
+
+            h, w, _ = first_frame.shape
+            face_region = None
+
+            # Convert to RGB for MediaPipe
+            rgb_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+            results = self.face_detection.process(rgb_frame)
+
+            if results.detections:
+                # Get the first detected face
+                detection = results.detections[0]
+                bbox = detection.location_data.relative_bounding_box
+                
+                # Convert relative coordinates to absolute pixels
+                x = int(bbox.xmin * w)
+                y = int(bbox.ymin * h)
+                bw = int(bbox.width * w)
+                bh = int(bbox.height * h)
+                
+                # Add padding around face
+                pad = int(bh * 1.5)
+                cx = x + bw // 2
+                cy = y + bh // 2
+                
+                fx1 = max(0, cx - pad)
+                fy1 = max(0, cy - pad)
+                fx2 = min(w, cx + pad)
+                fy2 = min(h, cy + pad)
+                
+                face_region = (fx1, fy1, fx2, fy2)
+                logger.info(f"Face detected at: x={x}, y={y}, w={bw}, h={bh}")
+            else:
+                logger.info("No face detected in first frame. Using full-screen gameplay mode.")
+
+            # Determine output dimensions based on face detection
+            if face_region:
+                # Face detected: use 35:65 split
+                out_h = OUT_H
+                top_h = TOP_H
+                bottom_h = BOTTOM_H
+            else:
+                # No face: full-screen gameplay
+                out_h = OUT_H
+                top_h = 0
+                bottom_h = OUT_H
+
+            # Create video writer
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (OUT_W, out_h))
+
+            if not out.isOpened():
+                logger.error(f"Cannot create output video: {output_path}")
+                cap.release()
+                return False
+
+            # Reset video to beginning
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+            frame_count = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                frame_count += 1
+                h, w, _ = frame.shape
+                
+                if face_region:
+                    # Extract face region (static position from first frame)
+                    fx1, fy1, fx2, fy2 = face_region
+                    face_crop = frame[fy1:fy2, fx1:fx2]
+                    
+                    # Resize maintaining aspect ratio, then center-crop to fit
+                    crop_h, crop_w = face_crop.shape[:2]
+                    target_aspect = OUT_W / top_h
+                    crop_aspect = crop_w / crop_h
+                    
+                    if crop_aspect > target_aspect:
+                        # Crop is wider, fit to height
+                        new_h = top_h
+                        new_w = int(crop_w * (top_h / crop_h))
+                        resized = cv2.resize(face_crop, (new_w, new_h))
+                        # Center crop width
+                        start_x = (new_w - OUT_W) // 2
+                        face_crop = resized[:, start_x:start_x + OUT_W]
+                    else:
+                        # Crop is taller, fit to width
+                        new_w = OUT_W
+                        new_h = int(crop_h * (OUT_W / crop_w))
+                        resized = cv2.resize(face_crop, (new_w, new_h))
+                        # Center crop height
+                        start_y = (new_h - top_h) // 2
+                        face_crop = resized[start_y:start_y + top_h, :]
+                    
+                    # Extract centered gameplay region
+                    gx1 = max(0, w // 2 - w // 4)
+                    gx2 = min(w, w // 2 + w // 4)
+                    gameplay = frame[:, gx1:gx2]
+                    gameplay = cv2.resize(gameplay, (OUT_W, bottom_h))
+                    
+                    # Stack top + bottom
+                    final = np.vstack([face_crop, gameplay])
+                else:
+                    # No face: centered gameplay (65%) with blurred top and bottom
+                    gx1 = max(0, w // 2 - w // 4)
+                    gx2 = min(w, w // 2 + w // 4)
+                    gameplay = frame[:, gx1:gx2]
+                    
+                    # Resize gameplay to 65% of output height
+                    gameplay_h = int(OUT_H * 0.65)
+                    gameplay_resized = cv2.resize(gameplay, (OUT_W, gameplay_h))
+                    
+                    # Create blurred versions for top and bottom
+                    blur_h = int(OUT_H * 0.175)  # 17.5% each for top and bottom
+                    
+                    # Apply strong Gaussian blur
+                    blurred_gameplay = cv2.GaussianBlur(gameplay_resized, (51, 51), 30)
+                    
+                    # Extract top and bottom portions from blurred gameplay
+                    top_blur = blurred_gameplay[:blur_h, :]
+                    bottom_blur = blurred_gameplay[-blur_h:, :]
+                    
+                    # Stack: blurred_top + clear_gameplay + blurred_bottom
+                    final = np.vstack([top_blur, gameplay_resized, bottom_blur])
+                
+                out.write(final)
+                
+                if frame_count % 100 == 0:
+                    logger.info(f"Processed {frame_count} frames...")
+
+            cap.release()
+            out.release()
+            logger.info(f"Done! Processed {frame_count} frames. Saved to {output_path}")
             return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"FFmpeg error: {e.stderr}")
-            return False
+
         except Exception as e:
-            logger.error(f"Unexpected error during video processing: {e}")
+            logger.error(f"Error processing video: {e}")
             return False
+        finally:
+            # Ensure resources are cleaned up
+            if hasattr(self, 'face_detection'):
+                self.face_detection.close()
+
 
 if __name__ == "__main__":
     # Test run if executed directly

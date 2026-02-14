@@ -8,3 +8,6 @@ google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
 aiofiles
+opencv-python
+mediapipe==0.10.14
+numpy
