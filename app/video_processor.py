@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import os
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ class VideoProcessor:
         if not os.path.exists(input_path):
             logger.error(f"Input file not found: {input_path}")
             return False
+
+        # Create temporary video-only file (without audio)
+        temp_video_path = output_path.replace(".mp4", "_temp_no_audio.mp4")
 
         try:
             cap = cv2.VideoCapture(input_path)
@@ -109,12 +113,12 @@ class VideoProcessor:
                 top_h = 0
                 bottom_h = OUT_H
 
-            # Create video writer
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (OUT_W, out_h))
+            # Create video writer with H264 codec for better compatibility
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+            out = cv2.VideoWriter(temp_video_path, fourcc, fps, (OUT_W, out_h))
 
             if not out.isOpened():
-                logger.error(f"Cannot create output video: {output_path}")
+                logger.error(f"Cannot create output video: {temp_video_path}")
                 cap.release()
                 return False
 
@@ -195,8 +199,49 @@ class VideoProcessor:
 
             cap.release()
             out.release()
-            logger.info(f"Done! Processed {frame_count} frames. Saved to {output_path}")
-            return True
+            logger.info(f"Video frames processed: {frame_count} frames")
+
+            # Now merge the processed video with the original audio using ffmpeg
+            logger.info(f"Merging audio from original video...")
+            
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',  # Overwrite output file
+                '-i', temp_video_path,  # Video input (no audio)
+                '-i', input_path,  # Original video with audio
+                '-map', '0:v:0',  # Take video from first input
+                '-map', '1:a:0?',  # Take audio from second input (? makes it optional)
+                '-c:v', 'libx264',  # H.264 video codec for YouTube
+                '-preset', 'medium',  # Encoding speed/quality tradeoff
+                '-crf', '23',  # Quality (lower is better, 18-28 is reasonable)
+                '-c:a', 'aac',  # AAC audio codec for YouTube
+                '-b:a', '192k',  # Audio bitrate
+                '-shortest',  # Match the shortest stream duration
+                output_path
+            ]
+            
+            result = subprocess.run(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"✅ Successfully merged audio! Output: {output_path}")
+                
+                # Clean up temporary file
+                try:
+                    os.remove(temp_video_path)
+                    logger.info(f"Cleaned up temporary file: {temp_video_path}")
+                except Exception as e:
+                    logger.warning(f"Could not remove temporary file: {e}")
+                
+                return True
+            else:
+                logger.error(f"FFmpeg error: {result.stderr}")
+                logger.warning(f"Keeping temp file for inspection: {temp_video_path}")
+                return False
 
         except Exception as e:
             logger.error(f"Error processing video: {e}")
@@ -205,6 +250,7 @@ class VideoProcessor:
             # Ensure resources are cleaned up
             if hasattr(self, 'face_detection'):
                 self.face_detection.close()
+
 
 
 if __name__ == "__main__":
