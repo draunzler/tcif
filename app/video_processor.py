@@ -204,21 +204,66 @@ class VideoProcessor:
             # Now merge the processed video with the original audio using ffmpeg
             logger.info(f"Merging audio from original video...")
             
+            # First, check if the input video has an audio stream using ffprobe
+            probe_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-select_streams', 'a:0',
+                '-show_entries', 'stream=codec_type',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                input_path
+            ]
+            
+            probe_result = subprocess.run(
+                probe_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            has_audio = probe_result.stdout.strip() == 'audio'
+            
+            if has_audio:
+                logger.info(f"✓ Audio stream detected in input video")
+            else:
+                logger.warning(f"⚠️ No audio stream found in input video: {input_path}")
+                logger.warning(f"FFprobe stderr: {probe_result.stderr}")
+            
+            # Build ffmpeg command with proper audio handling
             ffmpeg_cmd = [
                 'ffmpeg',
                 '-y',  # Overwrite output file
                 '-i', temp_video_path,  # Video input (no audio)
                 '-i', input_path,  # Original video with audio
                 '-map', '0:v:0',  # Take video from first input
-                '-map', '1:a:0?',  # Take audio from second input (? makes it optional)
+            ]
+            
+            if has_audio:
+                # Only add audio mapping if audio stream exists
+                ffmpeg_cmd.extend([
+                    '-map', '1:a:0',  # Take audio from second input (no ? so it fails if missing)
+                ])
+            
+            ffmpeg_cmd.extend([
                 '-c:v', 'libx264',  # H.264 video codec for YouTube
                 '-preset', 'medium',  # Encoding speed/quality tradeoff
                 '-crf', '23',  # Quality (lower is better, 18-28 is reasonable)
-                '-c:a', 'aac',  # AAC audio codec for YouTube
-                '-b:a', '192k',  # Audio bitrate
+            ])
+            
+            if has_audio:
+                ffmpeg_cmd.extend([
+                    '-c:a', 'aac',  # AAC audio codec for YouTube
+                    '-b:a', '192k',  # Audio bitrate
+                    '-ar', '44100',  # Audio sample rate
+                ])
+            
+            ffmpeg_cmd.extend([
+                '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
                 '-shortest',  # Match the shortest stream duration
                 output_path
-            ]
+            ])
+            
+            logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
             
             result = subprocess.run(
                 ffmpeg_cmd,
@@ -228,7 +273,11 @@ class VideoProcessor:
             )
             
             if result.returncode == 0:
-                logger.info(f"✅ Successfully merged audio! Output: {output_path}")
+                logger.info(f"✅ Successfully created output video: {output_path}")
+                if has_audio:
+                    logger.info(f"✅ Audio merged successfully!")
+                else:
+                    logger.warning(f"⚠️ Video created without audio (source had no audio)")
                 
                 # Clean up temporary file
                 try:
@@ -239,7 +288,9 @@ class VideoProcessor:
                 
                 return True
             else:
-                logger.error(f"FFmpeg error: {result.stderr}")
+                logger.error(f"❌ FFmpeg failed with return code {result.returncode}")
+                logger.error(f"FFmpeg stderr:\n{result.stderr}")
+                logger.error(f"FFmpeg stdout:\n{result.stdout}")
                 logger.warning(f"Keeping temp file for inspection: {temp_video_path}")
                 return False
 
