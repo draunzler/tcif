@@ -12,8 +12,8 @@ OUT_W = 1080
 OUT_H = 1920
 
 # 35% for facecam, 65% for gameplay
-TOP_H = int(OUT_H * 0.35)
-BOTTOM_H = int(OUT_H * 0.65)
+TOP_H = int(OUT_H * 0.35)   # 672
+BOTTOM_H = OUT_H - TOP_H    # 1248
 
 
 class VideoProcessor:
@@ -25,24 +25,159 @@ class VideoProcessor:
             min_detection_confidence=0.5
         )
 
+    def _get_video_info(self, input_path: str) -> dict:
+        """Get video info (fps, has_audio) using ffprobe."""
+        # Get FPS
+        fps_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=r_frame_rate',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            input_path
+        ]
+        fps_result = subprocess.run(fps_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        fps_str = fps_result.stdout.strip()
+        if '/' in fps_str:
+            num, den = fps_str.split('/')
+            fps = float(num) / float(den)
+        else:
+            fps = float(fps_str) if fps_str else 30.0
+
+        # Check for audio stream
+        audio_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            input_path
+        ]
+        audio_result = subprocess.run(audio_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        has_audio = audio_result.stdout.strip() == 'audio'
+
+        return {'fps': fps, 'has_audio': has_audio}
+
+    def _detect_face_region(self, frame: np.ndarray) -> tuple | None:
+        """
+        Detect face in a frame using MediaPipe.
+        Returns (fx1, fy1, fx2, fy2) bounding box with padding, or None.
+        """
+        h, w = frame.shape[:2]
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.face_detection.process(rgb_frame)
+
+        if not results.detections:
+            return None
+
+        detection = results.detections[0]
+        bbox = detection.location_data.relative_bounding_box
+
+        # Convert relative coordinates to absolute pixels
+        x = int(bbox.xmin * w)
+        y = int(bbox.ymin * h)
+        bw = int(bbox.width * w)
+        bh = int(bbox.height * h)
+
+        # Add generous padding around the face
+        pad = int(bh * 1.5)
+        cx = x + bw // 2
+        cy = y + bh // 2
+
+        fx1 = max(0, cx - pad)
+        fy1 = max(0, cy - pad)
+        fx2 = min(w, cx + pad)
+        fy2 = min(h, cy + pad)
+
+        logger.info(f"Face detected at: x={x}, y={y}, w={bw}, h={bh} → crop=({fx1},{fy1})-({fx2},{fy2})")
+        return (fx1, fy1, fx2, fy2)
+
+    def _compose_frame_with_face(self, frame: np.ndarray, face_region: tuple) -> np.ndarray:
+        """
+        Compose a vertical frame with face on top (35%) and gameplay on bottom (65%).
+        """
+        h, w = frame.shape[:2]
+        fx1, fy1, fx2, fy2 = face_region
+
+        # --- Top panel: face crop ---
+        face_crop = frame[fy1:fy2, fx1:fx2]
+        crop_h, crop_w = face_crop.shape[:2]
+
+        # Resize to fill TOP_H x OUT_W, preserving aspect ratio then center-cropping
+        target_aspect = OUT_W / TOP_H
+        crop_aspect = crop_w / crop_h
+
+        if crop_aspect > target_aspect:
+            # Wider than needed → fit height, crop width
+            new_h = TOP_H
+            new_w = int(crop_w * (TOP_H / crop_h))
+            resized = cv2.resize(face_crop, (new_w, new_h))
+            sx = (new_w - OUT_W) // 2
+            face_panel = resized[:, sx:sx + OUT_W]
+        else:
+            # Taller than needed → fit width, crop height
+            new_w = OUT_W
+            new_h = int(crop_h * (OUT_W / crop_w))
+            resized = cv2.resize(face_crop, (new_w, new_h))
+            sy = (new_h - TOP_H) // 2
+            face_panel = resized[sy:sy + TOP_H, :]
+
+        # --- Bottom panel: zoomed gameplay ---
+        # Take center 50% width of the frame for a zoomed-in gameplay view
+        gx1 = w // 4
+        gx2 = w - w // 4
+        gameplay = frame[:, gx1:gx2]
+        gameplay_panel = cv2.resize(gameplay, (OUT_W, BOTTOM_H))
+
+        return np.vstack([face_panel, gameplay_panel])
+
+    def _compose_frame_no_face(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Compose a vertical frame with blurred bars + centered gameplay (no face detected).
+        """
+        h, w = frame.shape[:2]
+
+        # Take center 50% width for zoomed gameplay
+        gx1 = w // 4
+        gx2 = w - w // 4
+        gameplay = frame[:, gx1:gx2]
+
+        # Main gameplay area (65% of output)
+        gameplay_h = int(OUT_H * 0.65)
+        gameplay_resized = cv2.resize(gameplay, (OUT_W, gameplay_h))
+
+        # Blurred bars for top and bottom (17.5% each)
+        blur_h = (OUT_H - gameplay_h) // 2
+
+        # Create a full-width blurred version of the frame
+        full_resized = cv2.resize(frame, (OUT_W, OUT_H))
+        blurred = cv2.GaussianBlur(full_resized, (51, 51), 30)
+
+        top_bar = blurred[:blur_h, :]
+        remaining_h = OUT_H - blur_h - gameplay_h
+        bottom_bar = blurred[OUT_H - remaining_h:, :]
+
+        return np.vstack([top_bar, gameplay_resized, bottom_bar])
+
     def process_video(self, input_path: str, output_path: str, broadcaster_name: str = None) -> bool:
         """
         Process video to create YouTube Shorts (1080x1920).
-        
+
+        Uses ffmpeg subprocess pipe for encoding instead of OpenCV VideoWriter
+        to avoid corrupted output files and audio issues.
+
         If a face is detected in the first frame:
         - Top 35%: Facecam (cropped and resized)
-        - Bottom 65%: Gameplay (centered)
-        
+        - Bottom 65%: Gameplay (centered and zoomed)
+
         If no face is detected:
         - Top 17.5%: Blurred gameplay
         - Middle 65%: Clear centered gameplay
         - Bottom 17.5%: Blurred gameplay
-        
+
         Args:
             input_path: Path to input video file
             output_path: Path to output video file
             broadcaster_name: Optional broadcaster name (currently unused)
-        
+
         Returns:
             True if processing successful, False otherwise
         """
@@ -50,263 +185,146 @@ class VideoProcessor:
             logger.error(f"Input file not found: {input_path}")
             return False
 
-        # Create temporary video-only file (without audio)
-        temp_video_path = output_path.replace(".mp4", "_temp_no_audio.mp4")
+        cap = None
+        ffmpeg_proc = None
 
         try:
+            # --- Step 1: Get video info via ffprobe ---
+            info = self._get_video_info(input_path)
+            fps = info['fps']
+            has_audio = info['has_audio']
+            logger.info(f"Input video: fps={fps:.2f}, has_audio={has_audio}")
+
+            # --- Step 2: Open input with OpenCV for frame reading ---
             cap = cv2.VideoCapture(input_path)
             if not cap.isOpened():
                 logger.error(f"Cannot open input video: {input_path}")
                 return False
 
-            fps = cap.get(cv2.CAP_PROP_FPS)
-
-            # Detect face in the first frame only
+            # --- Step 3: Detect face in first frame ---
             ret, first_frame = cap.read()
             if not ret:
                 logger.error("Cannot read first frame from video")
-                cap.release()
                 return False
 
-            h, w, _ = first_frame.shape
-            face_region = None
-
-            # Convert to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-            results = self.face_detection.process(rgb_frame)
-
-            if results.detections:
-                # Get the first detected face
-                detection = results.detections[0]
-                bbox = detection.location_data.relative_bounding_box
-                
-                # Convert relative coordinates to absolute pixels
-                x = int(bbox.xmin * w)
-                y = int(bbox.ymin * h)
-                bw = int(bbox.width * w)
-                bh = int(bbox.height * h)
-                
-                # Add padding around face
-                pad = int(bh * 1.5)
-                cx = x + bw // 2
-                cy = y + bh // 2
-                
-                fx1 = max(0, cx - pad)
-                fy1 = max(0, cy - pad)
-                fx2 = min(w, cx + pad)
-                fy2 = min(h, cy + pad)
-                
-                face_region = (fx1, fy1, fx2, fy2)
-                logger.info(f"Face detected at: x={x}, y={y}, w={bw}, h={bh}")
-            else:
-                logger.info("No face detected in first frame. Using full-screen gameplay mode.")
-
-            # Determine output dimensions based on face detection
+            face_region = self._detect_face_region(first_frame)
             if face_region:
-                # Face detected: use 35:65 split
-                out_h = OUT_H
-                top_h = TOP_H
-                bottom_h = BOTTOM_H
+                logger.info("Face detected — using 35/65 split (face top, gameplay bottom)")
             else:
-                # No face: full-screen gameplay
-                out_h = OUT_H
-                top_h = 0
-                bottom_h = OUT_H
+                logger.info("No face detected — using full-screen gameplay with blurred bars")
 
-            # Create video writer with H264 codec for better compatibility
-            fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
-            out = cv2.VideoWriter(temp_video_path, fourcc, fps, (OUT_W, out_h))
-
-            if not out.isOpened():
-                logger.error(f"Cannot create output video: {temp_video_path}")
-                cap.release()
-                return False
-
-            # Reset video to beginning
+            # Reset to beginning
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
+            # --- Step 4: Build ffmpeg command to receive raw frames via stdin ---
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',
+                # Raw video input from stdin
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-pix_fmt', 'bgr24',
+                '-s', f'{OUT_W}x{OUT_H}',
+                '-r', str(fps),
+                '-i', 'pipe:0',
+            ]
+
+            if has_audio:
+                # Second input: original file for audio
+                ffmpeg_cmd.extend(['-i', input_path])
+
+            # Output mappings
+            ffmpeg_cmd.extend(['-map', '0:v:0'])
+            if has_audio:
+                ffmpeg_cmd.extend(['-map', '1:a:0'])
+
+            # Video encoding — H.264 with yuv420p for maximum compatibility
+            ffmpeg_cmd.extend([
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+            ])
+
+            if has_audio:
+                # Audio encoding — AAC for YouTube compatibility
+                ffmpeg_cmd.extend([
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-ar', '44100',
+                ])
+
+            ffmpeg_cmd.extend([
+                '-movflags', '+faststart',       # Enable streaming-friendly MP4
+                '-avoid_negative_ts', 'make_zero',
+                '-shortest',
+                output_path
+            ])
+
+            logger.info(f"Starting ffmpeg pipe: {' '.join(ffmpeg_cmd)}")
+
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            # --- Step 5: Read frames, compose, and pipe to ffmpeg ---
             frame_count = 0
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
+
                 frame_count += 1
-                h, w, _ = frame.shape
-                
+
                 if face_region:
-                    # Extract face region (static position from first frame)
-                    fx1, fy1, fx2, fy2 = face_region
-                    face_crop = frame[fy1:fy2, fx1:fx2]
-                    
-                    # Resize maintaining aspect ratio, then center-crop to fit
-                    crop_h, crop_w = face_crop.shape[:2]
-                    target_aspect = OUT_W / top_h
-                    crop_aspect = crop_w / crop_h
-                    
-                    if crop_aspect > target_aspect:
-                        # Crop is wider, fit to height
-                        new_h = top_h
-                        new_w = int(crop_w * (top_h / crop_h))
-                        resized = cv2.resize(face_crop, (new_w, new_h))
-                        # Center crop width
-                        start_x = (new_w - OUT_W) // 2
-                        face_crop = resized[:, start_x:start_x + OUT_W]
-                    else:
-                        # Crop is taller, fit to width
-                        new_w = OUT_W
-                        new_h = int(crop_h * (OUT_W / crop_w))
-                        resized = cv2.resize(face_crop, (new_w, new_h))
-                        # Center crop height
-                        start_y = (new_h - top_h) // 2
-                        face_crop = resized[start_y:start_y + top_h, :]
-                    
-                    # Extract centered gameplay region
-                    gx1 = max(0, w // 2 - w // 4)
-                    gx2 = min(w, w // 2 + w // 4)
-                    gameplay = frame[:, gx1:gx2]
-                    gameplay = cv2.resize(gameplay, (OUT_W, bottom_h))
-                    
-                    # Stack top + bottom
-                    final = np.vstack([face_crop, gameplay])
+                    final = self._compose_frame_with_face(frame, face_region)
                 else:
-                    # No face: centered gameplay (65%) with blurred top and bottom
-                    gx1 = max(0, w // 2 - w // 4)
-                    gx2 = min(w, w // 2 + w // 4)
-                    gameplay = frame[:, gx1:gx2]
-                    
-                    # Resize gameplay to 65% of output height
-                    gameplay_h = int(OUT_H * 0.65)
-                    gameplay_resized = cv2.resize(gameplay, (OUT_W, gameplay_h))
-                    
-                    # Create blurred versions for top and bottom
-                    blur_h = int(OUT_H * 0.175)  # 17.5% each for top and bottom
-                    
-                    # Apply strong Gaussian blur
-                    blurred_gameplay = cv2.GaussianBlur(gameplay_resized, (51, 51), 30)
-                    
-                    # Extract top and bottom portions from blurred gameplay
-                    top_blur = blurred_gameplay[:blur_h, :]
-                    bottom_blur = blurred_gameplay[-blur_h:, :]
-                    
-                    # Stack: blurred_top + clear_gameplay + blurred_bottom
-                    final = np.vstack([top_blur, gameplay_resized, bottom_blur])
-                
-                out.write(final)
-                
-                if frame_count % 100 == 0:
+                    final = self._compose_frame_no_face(frame)
+
+                # Write raw BGR bytes to ffmpeg stdin
+                try:
+                    ffmpeg_proc.stdin.write(final.tobytes())
+                except BrokenPipeError:
+                    logger.error("FFmpeg pipe broke — ffmpeg likely crashed")
+                    break
+
+                if frame_count % 300 == 0:
                     logger.info(f"Processed {frame_count} frames...")
 
+            # Close stdin to signal end of input
+            ffmpeg_proc.stdin.close()
             cap.release()
-            out.release()
-            logger.info(f"Video frames processed: {frame_count} frames")
+            cap = None
 
-            # Now merge the processed video with the original audio using ffmpeg
-            logger.info(f"Merging audio from original video...")
-            
-            # First, check if the input video has an audio stream using ffprobe
-            probe_cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-select_streams', 'a:0',
-                '-show_entries', 'stream=codec_type',
-                '-of', 'default=noprint_wrappers=1:nokey=1',
-                input_path
-            ]
-            
-            probe_result = subprocess.run(
-                probe_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            has_audio = probe_result.stdout.strip() == 'audio'
-            
-            if has_audio:
-                logger.info(f"✓ Audio stream detected in input video")
-            else:
-                logger.warning(f"⚠️ No audio stream found in input video: {input_path}")
-                logger.warning(f"FFprobe stderr: {probe_result.stderr}")
-            
-            # Build ffmpeg command with proper audio handling
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output file
-                '-i', temp_video_path,  # Video input (no audio)
-                '-i', input_path,  # Original video with audio
-                '-map', '0:v:0',  # Take video from first input
-            ]
-            
-            if has_audio:
-                # Only add audio mapping if audio stream exists
-                ffmpeg_cmd.extend([
-                    '-map', '1:a:0',  # Take audio from second input (no ? so it fails if missing)
-                ])
-            
-            ffmpeg_cmd.extend([
-                '-c:v', 'libx264',  # H.264 video codec for YouTube
-                '-preset', 'medium',  # Encoding speed/quality tradeoff
-                '-crf', '23',  # Quality (lower is better, 18-28 is reasonable)
-            ])
-            
-            if has_audio:
-                ffmpeg_cmd.extend([
-                    '-c:a', 'aac',  # AAC audio codec for YouTube
-                    '-b:a', '192k',  # Audio bitrate
-                    '-ar', '44100',  # Audio sample rate
-                ])
-            
-            ffmpeg_cmd.extend([
-                '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
-                '-shortest',  # Match the shortest stream duration
-                output_path
-            ])
-            
-            logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-            
-            result = subprocess.run(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            if result.returncode == 0:
+            # Wait for ffmpeg to finish
+            stdout, stderr = ffmpeg_proc.communicate()
+            ffmpeg_proc = None
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 logger.info(f"✅ Successfully created output video: {output_path}")
+                logger.info(f"   Processed {frame_count} frames at {fps:.1f} fps")
                 if has_audio:
-                    logger.info(f"✅ Audio merged successfully!")
+                    logger.info(f"✅ Audio included (AAC 192k, 44100 Hz)")
                 else:
                     logger.warning(f"⚠️ Video created without audio (source had no audio)")
-                
-                # Clean up temporary file
-                try:
-                    os.remove(temp_video_path)
-                    logger.info(f"Cleaned up temporary file: {temp_video_path}")
-                except Exception as e:
-                    logger.warning(f"Could not remove temporary file: {e}")
-                
                 return True
             else:
-                logger.error(f"❌ FFmpeg failed with return code {result.returncode}")
-                logger.error(f"FFmpeg stderr:\n{result.stderr}")
-                logger.error(f"FFmpeg stdout:\n{result.stdout}")
-                logger.warning(f"Keeping temp file for inspection: {temp_video_path}")
+                logger.error(f"❌ FFmpeg failed to produce output file")
+                logger.error(f"FFmpeg stderr:\n{stderr.decode('utf-8', errors='replace')}")
                 return False
 
         except Exception as e:
-            logger.error(f"Error processing video: {e}")
+            logger.error(f"Error processing video: {e}", exc_info=True)
             return False
         finally:
-            # Ensure resources are cleaned up
-            if hasattr(self, 'face_detection'):
-                self.face_detection.close()
-
-
-
-if __name__ == "__main__":
-    # Test run if executed directly
-    logging.basicConfig(level=logging.INFO)
-    processor = VideoProcessor()
-    # Replace with an actual file path for local testing
-    # processor.process_video("input.mp4", "output.mp4", "BroadcasterName")
+            if cap is not None:
+                cap.release()
+            if ffmpeg_proc is not None:
+                try:
+                    ffmpeg_proc.stdin.close()
+                except Exception:
+                    pass
+                ffmpeg_proc.wait()
