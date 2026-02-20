@@ -299,8 +299,8 @@ class VideoProcessor:
             cap.release()
             cap = None
 
-            # Wait for ffmpeg to finish
-            stdout, stderr = ffmpeg_proc.communicate()
+            stderr = ffmpeg_proc.stderr.read()
+            ffmpeg_proc.wait()
             ffmpeg_proc = None
 
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
