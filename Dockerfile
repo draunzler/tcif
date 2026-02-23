@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 
-# Create data directory for game rotation state
-RUN mkdir -p /app/data
+# Create data and downloads directories
+RUN mkdir -p /app/data /app/downloads
 
 # Expose port for web dashboard
 EXPOSE 8000
