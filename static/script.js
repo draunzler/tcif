@@ -28,6 +28,7 @@ const getGameSkeleton = () => `
 async function refreshData(showSkeleton = false) {
     await Promise.all([
         loadStats(),
+        loadChannelStatus(),
         loadUploads(showSkeleton),
         loadAnalytics(showSkeleton),
         loadTrending(showSkeleton),
@@ -103,6 +104,56 @@ async function disconnectYouTube() {
         window.location.reload();
     } catch (error) {
         console.error('Error disconnecting YouTube:', error);
+    }
+}
+
+// ── Dedicated Channel Bot Functions ────────────────────────
+async function loadChannelStatus() {
+    try {
+        const response = await fetch('/api/channel-status');
+        const data = await response.json();
+        updateChannelCard('valorant', data.valorant);
+        updateChannelCard('cs', data.cs);
+    } catch (error) {
+        console.error('Error loading channel status:', error);
+    }
+}
+
+function updateChannelCard(channel, connected) {
+    const card = document.getElementById(`channel-${channel}`);
+    const statusText = document.getElementById(`${channel}-status-text`);
+    const btn = document.getElementById(`${channel}-action-btn`);
+
+    if (connected) {
+        card.classList.add('connected');
+        statusText.textContent = '✅ Connected — auto-posting active';
+        statusText.style.color = 'var(--success)';
+        btn.textContent = 'Disconnect';
+        btn.className = 'btn btn-danger btn-sm channel-btn';
+        btn.onclick = () => disconnectChannel(channel);
+    } else {
+        card.classList.remove('connected');
+        statusText.textContent = 'Not connected';
+        statusText.style.color = '';
+        btn.textContent = 'Connect';
+        btn.className = 'btn btn-primary btn-sm channel-btn';
+        btn.onclick = () => connectChannel(channel);
+    }
+}
+
+function connectChannel(channel) {
+    window.location.href = `/auth/youtube/${channel}`;
+}
+
+async function disconnectChannel(channel) {
+    const name = channel === 'valorant' ? 'Valorant' : 'CS';
+    if (!confirm(`Disconnect the ${name} channel?`)) return;
+
+    try {
+        await fetch(`/api/disconnect/${channel}`, { method: 'POST' });
+        window.location.reload();
+    } catch (error) {
+        console.error(`Error disconnecting ${channel}:`, error);
     }
 }
 
@@ -601,8 +652,11 @@ function checkUrlParams() {
     if (urlParams.has('success')) {
         const message = urlParams.get('success');
         if (message === 'youtube_connected') {
-            // Success notification in a clean way
             console.log('Successfully connected to YouTube!');
+        } else if (message === 'valorant_connected') {
+            console.log('Successfully connected Valorant channel!');
+        } else if (message === 'cs_connected') {
+            console.log('Successfully connected CS channel!');
         }
         window.history.replaceState({}, document.title, window.location.pathname);
     }
