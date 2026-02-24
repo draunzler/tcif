@@ -4,17 +4,22 @@ YouTube Data API service for listing channel videos.
 import logging
 from googleapiclient.discovery import build
 from app.youtube_auth import get_credentials
+from app.channel_auth import get_channel_credentials
 
 logger = logging.getLogger(__name__)
 
-def get_youtube_client():
+def get_youtube_client(channel=None):
     """Get YouTube Data API v3 client."""
-    creds = get_credentials()
+    if channel:
+        creds = get_channel_credentials(channel)
+    else:
+        creds = get_credentials()
+    
     if not creds:
         return None
     return build('youtube', 'v3', credentials=creds)
 
-def get_my_recent_videos(limit=20, raw_format=False):
+def get_my_recent_videos(limit=20, raw_format=False, channel=None):
     """
     Fetch recent uploads from the authenticated channel with analytics.
     
@@ -26,7 +31,7 @@ def get_my_recent_videos(limit=20, raw_format=False):
         dict or list: YouTube API response format or simplified list
     """
     try:
-        youtube = get_youtube_client()
+        youtube = get_youtube_client(channel=channel)
         if not youtube:
             return {'items': []} if raw_format else []
 

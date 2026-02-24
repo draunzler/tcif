@@ -84,6 +84,18 @@ async def api_youtube_videos(limit: int = 50, raw: bool = False):
     videos = get_my_recent_videos(limit=limit, raw_format=raw)
     return JSONResponse(videos)
 
+@app.get("/api/youtube-videos/{channel}")
+async def api_channel_youtube_videos(channel: str, limit: int = 50, raw: bool = False):
+    """Get actual YouTube videos from a dedicated channel."""
+    if channel not in ('valorant', 'cs'):
+        return JSONResponse({"error": "Invalid channel"}, status_code=400)
+        
+    if not is_channel_authenticated(channel):
+        return JSONResponse({"error": f"{channel} not authenticated"}, status_code=401)
+    
+    videos = get_my_recent_videos(limit=limit, raw_format=raw, channel=channel)
+    return JSONResponse(videos)
+
 @app.get("/api/trending")
 async def api_trending():
     """Get trending games leaderboard."""

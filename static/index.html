@@ -48,7 +48,8 @@
                 <div class="channel-status-grid">
                     <div class="channel-card" id="channel-valorant">
                         <div class="channel-card-header">
-                            <div class="channel-icon" style="background: linear-gradient(135deg, #fd4556, #ff6b6b);">🎯</div>
+                            <div class="channel-icon" style="background: linear-gradient(135deg, #fd4556, #ff6b6b);">🎯
+                            </div>
                             <div class="channel-info">
                                 <h4>Valorant Channel</h4>
                                 <p id="valorant-status-text" class="channel-desc">Not connected</p>
@@ -58,11 +59,13 @@
                             <span class="channel-schedule">⏰ Every 3h (offset +1h)</span>
                             <span class="channel-range">📅 Top clip from 48h</span>
                         </div>
-                        <button id="valorant-action-btn" class="btn btn-primary btn-sm channel-btn" onclick="connectChannel('valorant')">Connect</button>
+                        <button id="valorant-action-btn" class="btn btn-primary btn-sm channel-btn"
+                            onclick="connectChannel('valorant')">Connect</button>
                     </div>
                     <div class="channel-card" id="channel-cs">
                         <div class="channel-card-header">
-                            <div class="channel-icon" style="background: linear-gradient(135deg, #de9b35, #f5c542);">🔫</div>
+                            <div class="channel-icon" style="background: linear-gradient(135deg, #de9b35, #f5c542);">🔫
+                            </div>
                             <div class="channel-info">
                                 <h4>CS Channel</h4>
                                 <p id="cs-status-text" class="channel-desc">Not connected</p>
@@ -72,7 +75,8 @@
                             <span class="channel-schedule">⏰ Every 3h (offset +2h)</span>
                             <span class="channel-range">📅 Top clip from 48h</span>
                         </div>
-                        <button id="cs-action-btn" class="btn btn-primary btn-sm channel-btn" onclick="connectChannel('cs')">Connect</button>
+                        <button id="cs-action-btn" class="btn btn-primary btn-sm channel-btn"
+                            onclick="connectChannel('cs')">Connect</button>
                     </div>
                 </div>
 
@@ -211,7 +215,14 @@
                                     Local Clips
                                 </button>
                                 <button class="tab-btn" onclick="switchTab('youtube')" id="tab-youtube">
-                                    YouTube Videos
+                                    Main YT
+                                </button>
+                                <button class="tab-btn" onclick="switchTab('youtube-valorant')"
+                                    id="tab-youtube-valorant">
+                                    Valorant YT
+                                </button>
+                                <button class="tab-btn" onclick="switchTab('youtube-cs')" id="tab-youtube-cs">
+                                    CS YT
                                 </button>
                             </div>
                         </div>

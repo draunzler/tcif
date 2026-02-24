@@ -5,6 +5,8 @@ let watchTimeChart = null;
 let currentTab = 'clips';
 let clipsData = [];
 let youtubeVideos = [];
+let valorantVideos = [];
+let csVideos = [];
 
 // Helper to create skeleton row for table
 const getSkeletonRow = () => `
@@ -168,8 +170,12 @@ function switchTab(tab) {
     // Render the active dataset
     if (tab === 'clips') {
         renderClips(clipsData);
-    } else {
+    } else if (tab === 'youtube') {
         renderYouTubeVideos(youtubeVideos);
+    } else if (tab === 'youtube-valorant') {
+        renderYouTubeVideos(valorantVideos);
+    } else if (tab === 'youtube-cs') {
+        renderYouTubeVideos(csVideos);
     }
 
     // Re-trigger search after switching tabs
@@ -489,21 +495,37 @@ async function loadUploads(showSkeleton = false) {
     }
 
     try {
-        // Fetch both datasets in parallel
-        const [clipsRes, youtubeRes] = await Promise.all([
-            fetch('/api/uploads?limit=50'),
-            fetch('/api/youtube-videos?limit=50')
+        // Fetch all datasets in parallel gracefully
+        const fetchSafe = async (url) => {
+            try {
+                const res = await fetch(url);
+                return await res.json();
+            } catch (e) {
+                return { items: [] };
+            }
+        };
+
+        const [clipsRaw, ytRaw, valRaw, csRaw] = await Promise.all([
+            fetchSafe('/api/uploads?limit=50'),
+            fetchSafe('/api/youtube-videos?limit=50'),
+            fetchSafe('/api/youtube-videos/valorant?limit=50'),
+            fetchSafe('/api/youtube-videos/cs?limit=50')
         ]);
 
-        clipsData = await clipsRes.json();
-        const youtubePayload = await youtubeRes.json();
-        youtubeVideos = Array.isArray(youtubePayload) ? youtubePayload : (youtubePayload.items || []);
+        clipsData = Array.isArray(clipsRaw) ? clipsRaw : [];
+        youtubeVideos = Array.isArray(ytRaw) ? ytRaw : (!ytRaw.error ? (ytRaw.items || []) : []);
+        valorantVideos = Array.isArray(valRaw) ? valRaw : (!valRaw.error ? (valRaw.items || []) : []);
+        csVideos = Array.isArray(csRaw) ? csRaw : (!csRaw.error ? (csRaw.items || []) : []);
 
         // Initial render based on active tab
         if (currentTab === 'clips') {
             renderClips(clipsData);
-        } else {
+        } else if (currentTab === 'youtube') {
             renderYouTubeVideos(youtubeVideos);
+        } else if (currentTab === 'youtube-valorant') {
+            renderYouTubeVideos(valorantVideos);
+        } else if (currentTab === 'youtube-cs') {
+            renderYouTubeVideos(csVideos);
         }
 
         // Setup Search
@@ -526,7 +548,11 @@ function triggerSearch(query) {
         );
         renderClips(filtered);
     } else {
-        const filtered = youtubeVideos.filter(v =>
+        let targetData = youtubeVideos;
+        if (currentTab === 'youtube-valorant') targetData = valorantVideos;
+        else if (currentTab === 'youtube-cs') targetData = csVideos;
+
+        const filtered = targetData.filter(v =>
             v.title.toLowerCase().includes(q)
         );
         renderYouTubeVideos(filtered);
@@ -593,7 +619,7 @@ function renderYouTubeVideos(videos) {
     const tbody = document.getElementById('uploads-tbody');
 
     // Only update headers if needed to prevent flicker
-    if (thead.dataset.activeTab !== 'youtube') {
+    if (!thead.dataset.activeTab || !thead.dataset.activeTab.startsWith('youtube')) {
         thead.innerHTML = `
             <tr>
                 <th>Preview</th>
