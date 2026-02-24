@@ -697,6 +697,11 @@ function checkUrlParams() {
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', () => {
     checkUrlParams();
+
+    // Set default click handlers for channel connect buttons immediately
+    document.getElementById('valorant-action-btn').onclick = () => connectChannel('valorant');
+    document.getElementById('cs-action-btn').onclick = () => connectChannel('cs');
+
     refreshData(true); // First load with skeletons
     setInterval(() => refreshData(false), 30000); // Background refresh silent
 
