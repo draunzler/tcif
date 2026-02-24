@@ -20,6 +20,7 @@ from app.database import (
     add_clip, update_upload_status, is_clip_processed,
     get_recent_clips
 )
+from app.channel_scheduler import download_and_post_valorant, download_and_post_cs
 
 load_dotenv()
 
@@ -354,6 +355,32 @@ def main():
     
     logger.info("✅ Scheduler started! Running continuously...")
     logger.info("   Press Ctrl+C to stop")
+    logger.info("")
+    logger.info("📅 Schedule:")
+    logger.info("   Main bot:     hours 0,3,6,9,12,15,18,21 (minute 10)")
+    logger.info("   Valorant bot: hours 1,4,7,10,13,16,19,22 (minute 10) [+1h offset]")
+    logger.info("   CS bot:       hours 2,5,8,11,14,17,20,23 (minute 10) [+2h offset]")
+    
+    # ── Dedicated Channel Bots ──────────────────────────────
+    # Valorant channel: +1 hour offset from main (hours 1,4,7,10,13,16,19,22)
+    scheduler.add_job(
+        download_and_post_valorant,
+        trigger=CronTrigger(hour='1/3', minute=10),
+        id='channel_valorant',
+        name='Valorant channel - download and post top clip',
+        replace_existing=True,
+        misfire_grace_time=3600
+    )
+    
+    # CS channel: +2 hours offset from main (hours 2,5,8,11,14,17,20,23)
+    scheduler.add_job(
+        download_and_post_cs,
+        trigger=CronTrigger(hour='2/3', minute=10),
+        id='channel_cs',
+        name='CS channel - download and post top clip',
+        replace_existing=True,
+        misfire_grace_time=3600
+    )
     
     try:
         scheduler.start()

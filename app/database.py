@@ -20,7 +20,8 @@ def init_database():
         conn.execute('''
             CREATE TABLE IF NOT EXISTS clips (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                clip_id TEXT UNIQUE NOT NULL,
+                clip_id TEXT NOT NULL,
+                channel TEXT NOT NULL DEFAULT 'main',
                 title TEXT NOT NULL,
                 creator_name TEXT,
                 broadcaster_name TEXT,
@@ -36,9 +37,17 @@ def init_database():
                 youtube_url TEXT,
                 upload_status TEXT DEFAULT 'pending',
                 upload_error TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(clip_id, channel)
             )
         ''')
+        
+        # Migration: add 'channel' column to existing databases
+        try:
+            conn.execute("ALTER TABLE clips ADD COLUMN channel TEXT NOT NULL DEFAULT 'main'")
+            logger.info("Migration: added 'channel' column to clips table")
+        except Exception:
+            pass  # Column already exists
         
         conn.execute('''
             CREATE TABLE IF NOT EXISTS game_stats (
@@ -326,3 +335,60 @@ def get_trending_game_by_id(game_id):
         cursor = conn.execute('SELECT * FROM trending_games WHERE game_id = ?', (game_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def add_channel_clip(clip_data, file_path, channel='main'):
+    """
+    Add downloaded clip to database with a channel tag.
+    Allows the same clip_id on different channels.
+    
+    Args:
+        clip_data: Dictionary with clip information
+        file_path: Path to downloaded file
+        channel: Channel name ('main', 'valorant', or 'cs')
+        
+    Returns:
+        int: ID of inserted record
+    """
+    with get_db() as conn:
+        cursor = conn.execute('''
+            INSERT INTO clips (
+                clip_id, channel, title, creator_name, broadcaster_name,
+                game_name, game_id, view_count, duration,
+                url, file_path, downloaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            clip_data['id'],
+            channel,
+            clip_data['title'],
+            clip_data.get('creator_name'),
+            clip_data.get('broadcaster_name'),
+            clip_data.get('game_name'),
+            clip_data.get('game_id'),
+            clip_data.get('view_count'),
+            clip_data.get('duration'),
+            clip_data.get('url'),
+            file_path,
+            datetime.utcnow().isoformat()
+        ))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def is_clip_processed_for_channel(clip_id, channel='main'):
+    """
+    Check if a clip has already been processed for a specific channel.
+    
+    Args:
+        clip_id: Twitch clip ID
+        channel: Channel name ('main', 'valorant', or 'cs')
+        
+    Returns:
+        bool: True if clip_id+channel combo exists in database
+    """
+    with get_db() as conn:
+        cursor = conn.execute(
+            'SELECT 1 FROM clips WHERE clip_id = ? AND channel = ?',
+            (clip_id, channel)
+        )
+        return cursor.fetchone() is not None

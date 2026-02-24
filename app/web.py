@@ -14,6 +14,12 @@ from app.youtube_auth import (
     is_authenticated,
     disconnect as youtube_disconnect
 )
+from app.channel_auth import (
+    get_channel_authorization_url,
+    exchange_channel_code_for_token,
+    is_channel_authenticated,
+    disconnect_channel
+)
 from app.database import get_stats, get_recent_clips, delete_clip, delete_clips_by_status, get_trending_leaderboard
 from app.youtube_analytics import get_channel_analytics, get_channel_summary
 from app.youtube_videos import get_my_recent_videos
@@ -241,3 +247,70 @@ async def api_cleanup_clips(status: str = "pending"):
             {"success": False, "error": "Failed to cleanup clips"},
             status_code=500
         )
+
+
+# ============================================================
+#  Dedicated Channel Auth Routes (Valorant & CS)
+# ============================================================
+
+@app.get("/auth/youtube/{channel}")
+async def channel_youtube_auth(channel: str):
+    """Start YouTube OAuth flow for a dedicated channel."""
+    if channel not in ('valorant', 'cs'):
+        return JSONResponse({"error": "Invalid channel"}, status_code=400)
+    try:
+        auth_url, state = get_channel_authorization_url(channel)
+        oauth_states.add(state)
+        return RedirectResponse(url=auth_url)
+    except Exception as e:
+        logger.error(f"OAuth initiation error ({channel}): {e}", exc_info=True)
+        return JSONResponse({"error": f"Failed to initiate {channel} authentication"}, status_code=500)
+
+
+@app.get("/auth/youtube/{channel}/callback")
+async def channel_youtube_callback(channel: str, code: str = None, state: str = None, error: str = None):
+    """Handle YouTube OAuth callback for a dedicated channel."""
+    if channel not in ('valorant', 'cs'):
+        return JSONResponse({"error": "Invalid channel"}, status_code=400)
+    
+    if error:
+        logger.error(f"OAuth error ({channel}): {error}")
+        return RedirectResponse(url=f"/?error={channel}_oauth_failed")
+    
+    if not code or not state:
+        return RedirectResponse(url="/?error=missing_params")
+    
+    if state not in oauth_states:
+        return RedirectResponse(url="/?error=invalid_state")
+    
+    oauth_states.discard(state)
+    
+    try:
+        exchange_channel_code_for_token(channel, code, state)
+        logger.info(f"✅ {channel} channel YouTube authentication successful")
+        return RedirectResponse(url=f"/?success={channel}_connected")
+    except Exception as e:
+        logger.error(f"Token exchange error ({channel}): {e}", exc_info=True)
+        return RedirectResponse(url=f"/?error={channel}_token_exchange_failed")
+
+
+@app.get("/api/channel-status")
+async def api_channel_status():
+    """Get authentication status for dedicated channels."""
+    return JSONResponse({
+        "valorant": is_channel_authenticated("valorant"),
+        "cs": is_channel_authenticated("cs"),
+    })
+
+
+@app.post("/api/disconnect/{channel}")
+async def api_disconnect_channel(channel: str):
+    """Disconnect a dedicated YouTube channel."""
+    if channel not in ('valorant', 'cs'):
+        return JSONResponse({"error": "Invalid channel"}, status_code=400)
+    try:
+        disconnect_channel(channel)
+        return JSONResponse({"success": True, "message": f"{channel} channel disconnected"})
+    except Exception as e:
+        logger.error(f"Disconnect error ({channel}): {e}", exc_info=True)
+        return JSONResponse({"success": False, "error": f"Failed to disconnect {channel}"}, status_code=500)
