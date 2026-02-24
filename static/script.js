@@ -143,11 +143,11 @@ function updateChannelCard(channel, connected) {
     }
 }
 
-function connectChannel(channel) {
+window.connectChannel = function (channel) {
     window.location.href = `/auth/youtube/${channel}`;
 }
 
-async function disconnectChannel(channel) {
+window.disconnectChannel = async function (channel) {
     const name = channel === 'valorant' ? 'Valorant' : 'CS';
     if (!confirm(`Disconnect the ${name} channel?`)) return;
 
