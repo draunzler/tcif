@@ -42,12 +42,64 @@ def init_database():
             )
         ''')
         
-        # Migration: add 'channel' column to existing databases
+        # Migration: fix UNIQUE constraint from clip_id-only to (clip_id, channel)
+        # SQLite can't alter constraints, so we must recreate the table
         try:
-            conn.execute("ALTER TABLE clips ADD COLUMN channel TEXT NOT NULL DEFAULT 'main'")
-            logger.info("Migration: added 'channel' column to clips table")
-        except Exception:
-            pass  # Column already exists
+            # Check if old unique index on just clip_id exists
+            idx_rows = conn.execute("PRAGMA index_list('clips')").fetchall()
+            needs_migration = False
+            for idx in idx_rows:
+                idx_info = conn.execute(f"PRAGMA index_info('{idx['name']}')").fetchall()
+                col_names = [col['name'] for col in idx_info]
+                if col_names == ['clip_id']:
+                    needs_migration = True
+                    break
+            
+            if needs_migration:
+                logger.info("Migration: recreating clips table with UNIQUE(clip_id, channel) constraint")
+                conn.execute("ALTER TABLE clips RENAME TO clips_old")
+                conn.execute('''
+                    CREATE TABLE clips (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        clip_id TEXT NOT NULL,
+                        channel TEXT NOT NULL DEFAULT 'main',
+                        title TEXT NOT NULL,
+                        creator_name TEXT,
+                        broadcaster_name TEXT,
+                        game_name TEXT,
+                        game_id TEXT,
+                        view_count INTEGER,
+                        duration REAL,
+                        url TEXT,
+                        file_path TEXT,
+                        downloaded_at TIMESTAMP NOT NULL,
+                        uploaded_at TIMESTAMP,
+                        youtube_video_id TEXT,
+                        youtube_url TEXT,
+                        upload_status TEXT DEFAULT 'pending',
+                        upload_error TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(clip_id, channel)
+                    )
+                ''')
+                # Check if old table has 'channel' column
+                old_cols = [col['name'] for col in conn.execute("PRAGMA table_info('clips_old')").fetchall()]
+                if 'channel' in old_cols:
+                    conn.execute('''
+                        INSERT INTO clips SELECT * FROM clips_old
+                    ''')
+                else:
+                    # Old table has no channel column — copy data with default 'main'
+                    old_col_list = ', '.join(c for c in old_cols if c != 'id')
+                    conn.execute(f'''
+                        INSERT INTO clips (channel, {old_col_list})
+                        SELECT 'main', {old_col_list} FROM clips_old
+                    ''')
+                conn.execute("DROP TABLE clips_old")
+                conn.commit()
+                logger.info("Migration: clips table recreated with correct UNIQUE constraint")
+        except Exception as e:
+            logger.warning(f"Migration check skipped or failed: {e}")
         
         conn.execute('''
             CREATE TABLE IF NOT EXISTS game_stats (

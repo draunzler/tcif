@@ -17,7 +17,7 @@ from app.database import (
     save_game_stats, get_game_stats_one_hour_ago, 
     update_trending_status, get_trending_leaderboard,
     get_trending_game_by_id, set_game_post_override,
-    add_clip, update_upload_status, is_clip_processed,
+    add_clip, update_upload_status, is_clip_processed_for_channel,
     get_recent_clips
 )
 from app.channel_scheduler import download_and_post_valorant, download_and_post_cs
@@ -231,7 +231,7 @@ def download_clips():
         clips = get_top_clips_last_n_hours(game_id=target_game_id, hours=96, limit=50)
         
         # Filter out already processed
-        qualified = [c for c in clips if not is_clip_processed(c['id'])]
+        qualified = [c for c in clips if not is_clip_processed_for_channel(c['id'], 'main')]
         
         if not qualified:
             logger.info(f"💤 No new clips found for {target_game_name} in the last 4 days.")
