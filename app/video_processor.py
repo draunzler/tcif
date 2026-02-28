@@ -157,26 +157,18 @@ class VideoProcessor:
 
         return np.vstack([top_bar, gameplay_resized, bottom_bar])
 
-    def process_video(self, input_path: str, output_path: str, broadcaster_name: str = None) -> bool:
+    def process_video(self, input_path: str, output_path: str, broadcaster_name: str = None, vertical: bool = True) -> bool:
         """
-        Process video to create YouTube Shorts (1080x1920).
+        Process video to create YouTube Shorts (1080x1920) or Horizontal (1920x1080).
 
         Uses ffmpeg subprocess pipe for encoding instead of OpenCV VideoWriter
         to avoid corrupted output files and audio issues.
-
-        If a face is detected in the first frame:
-        - Top 35%: Facecam (cropped and resized)
-        - Bottom 65%: Gameplay (centered and zoomed)
-
-        If no face is detected:
-        - Top 17.5%: Blurred gameplay
-        - Middle 65%: Clear centered gameplay
-        - Bottom 17.5%: Blurred gameplay
 
         Args:
             input_path: Path to input video file
             output_path: Path to output video file
             broadcaster_name: Optional broadcaster name (currently unused)
+            vertical: If True, output 1080x1920 (Shorts). If False, output 1920x1080 (Horizontal).
 
         Returns:
             True if processing successful, False otherwise
@@ -188,12 +180,16 @@ class VideoProcessor:
         cap = None
         ffmpeg_proc = None
 
+        # Determine output dimensions
+        out_w = OUT_W if vertical else 1920
+        out_h = OUT_H if vertical else 1080
+
         try:
             # --- Step 1: Get video info via ffprobe ---
             info = self._get_video_info(input_path)
             fps = info['fps']
             has_audio = info['has_audio']
-            logger.info(f"Input video: fps={fps:.2f}, has_audio={has_audio}")
+            logger.info(f"Input video: fps={fps:.2f}, has_audio={has_audio}, vertical={vertical}")
 
             # --- Step 2: Open input with OpenCV for frame reading ---
             cap = cv2.VideoCapture(input_path)
@@ -201,20 +197,24 @@ class VideoProcessor:
                 logger.error(f"Cannot open input video: {input_path}")
                 return False
 
-            # --- Step 3: Detect face in first frame ---
-            ret, first_frame = cap.read()
-            if not ret:
-                logger.error("Cannot read first frame from video")
-                return False
+            face_region = None
+            if vertical:
+                # --- Step 3: Detect face in first frame for vertical only ---
+                ret, first_frame = cap.read()
+                if not ret:
+                    logger.error("Cannot read first frame from video")
+                    return False
 
-            face_region = self._detect_face_region(first_frame)
-            if face_region:
-                logger.info("Face detected — using 35/65 split (face top, gameplay bottom)")
+                face_region = self._detect_face_region(first_frame)
+                if face_region:
+                    logger.info("Face detected — using 35/65 split (face top, gameplay bottom)")
+                else:
+                    logger.info("No face detected — using full-screen gameplay with blurred bars")
+
+                # Reset to beginning
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             else:
-                logger.info("No face detected — using full-screen gameplay with blurred bars")
-
-            # Reset to beginning
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                logger.info("Horizontal mode — using original aspect ratio with 1080p scaling")
 
             # --- Step 4: Build ffmpeg command to receive raw frames via stdin ---
             ffmpeg_cmd = [
@@ -224,7 +224,7 @@ class VideoProcessor:
                 '-f', 'rawvideo',
                 '-vcodec', 'rawvideo',
                 '-pix_fmt', 'bgr24',
-                '-s', f'{OUT_W}x{OUT_H}',
+                '-s', f'{out_w}x{out_h}',
                 '-r', str(fps),
                 '-i', 'pipe:0',
             ]
@@ -279,10 +279,14 @@ class VideoProcessor:
 
                 frame_count += 1
 
-                if face_region:
-                    final = self._compose_frame_with_face(frame, face_region)
+                if vertical:
+                    if face_region:
+                        final = self._compose_frame_with_face(frame, face_region)
+                    else:
+                        final = self._compose_frame_no_face(frame)
                 else:
-                    final = self._compose_frame_no_face(frame)
+                    # Horizontal: Simple resize to 1920x1080
+                    final = cv2.resize(frame, (out_w, out_h))
 
                 # Write raw BGR bytes to ffmpeg stdin
                 try:
@@ -328,3 +332,4 @@ class VideoProcessor:
                 except Exception:
                     pass
                 ffmpeg_proc.wait()
+

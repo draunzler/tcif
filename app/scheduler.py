@@ -201,40 +201,54 @@ def download_clips():
         target_game_id = None
         target_game_name = None
         
-        if len(cs_today) < 2:
-            target_game_id = '32399'
-            target_game_name = 'Counter-Strike'
-            logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(cs_today)}/2)")
-        elif len(val_today) < 2:
-            target_game_id = '516575'
-            target_game_name = 'Valorant'
-            logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(val_today)}/2)")
+        # --- TEMP OVERRIDE UNTIL MARCH 16 ---
+        # Main channel: Valorant only, last 24h, horizontal
+        # Valorant channel: Valorant only, last 24h, shorts
+        # Pause complex logic.
+        target_game_id = '516575'
+        target_game_name = 'Valorant'
+        lookback_hours = 24
+        
+        from datetime import date
+        if date.today() <= date(2026, 3, 16):
+            logger.info(f"🛡️  Simplified Mode (Until March 16): Targeting {target_game_name} for main channel.")
         else:
-            # If quotas met, pick from trending or rotation
-            leaderboard = get_trending_leaderboard()
-            if leaderboard:
-                actual_trends = [tg for tg in leaderboard if tg['game_id'] not in ['32399', '516575']]
-                if actual_trends:
-                    target_game_id = actual_trends[0]['game_id']
-                    target_game_name = actual_trends[0]['game_name']
-                    logger.info(f"🎯 Target: Trending - {target_game_name}")
-            
-            if not target_game_id:
-                target_game_id = get_next_game_id()
-                managed_games = load_top_games()
-                g_info = next((g for g in managed_games if g['id'] == target_game_id), None)
-                target_game_name = g_info['name'] if g_info else "Rotation"
-                logger.info(f"🎯 Target: Rotation - {target_game_name}")
+            # Fallback to original quota/trending logic if past March 16
+            if len(cs_today) < 2:
+                target_game_id = '32399'
+                target_game_name = 'Counter-Strike'
+                logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(cs_today)}/2)")
+            elif len(val_today) < 2:
+                target_game_id = '516575'
+                target_game_name = 'Valorant'
+                logger.info(f"🎯 Target: {target_game_name} (Posted today: {len(val_today)}/2)")
+            else:
+                # If quotas met, pick from trending or rotation
+                leaderboard = get_trending_leaderboard()
+                if leaderboard:
+                    actual_trends = [tg for tg in leaderboard if tg['game_id'] not in ['32399', '516575']]
+                    if actual_trends:
+                        target_game_id = actual_trends[0]['game_id']
+                        target_game_name = actual_trends[0]['game_name']
+                        logger.info(f"🎯 Target: Trending - {target_game_name}")
+                
+                if not target_game_id:
+                    target_game_id = get_next_game_id()
+                    managed_games = load_top_games()
+                    g_info = next((g for g in managed_games if g['id'] == target_game_id), None)
+                    target_game_name = g_info['name'] if g_info else "Rotation"
+                    logger.info(f"🎯 Target: Rotation - {target_game_name}")
+            lookback_hours = 96
 
-        # 3. Fetch Top Clip from Last 4 Days
-        logger.info(f"🔍 Fetching top clips for {target_game_name} (ID: {target_game_id}) from last 4 days...")
-        clips = get_top_clips_last_n_hours(game_id=target_game_id, hours=96, limit=50)
+        # 3. Fetch Top Clip
+        logger.info(f"🔍 Fetching top clips for {target_game_name} (ID: {target_game_id}) from last {lookback_hours} hours...")
+        clips = get_top_clips_last_n_hours(game_id=target_game_id, hours=lookback_hours, limit=50)
         
         # Filter out already processed
         qualified = [c for c in clips if not is_clip_processed_for_channel(c['id'], 'main')]
         
         if not qualified:
-            logger.info(f"💤 No new clips found for {target_game_name} in the last 4 days.")
+            logger.info(f"💤 No new clips found for {target_game_name} in the last {lookback_hours} hours.")
             return
 
         # Sort by view count descending and pick the top one
@@ -261,7 +275,8 @@ def download_clips():
             broadcaster = best_clip.get('broadcaster_name', 'Twitch')
             logger.info(f"🎨 Processing clip for {broadcaster}...")
             
-            if processor.process_video(video_output_path, processed_output_path, broadcaster):
+            # Use horizontal mode (vertical=False) for main channel
+            if processor.process_video(video_output_path, processed_output_path, broadcaster, vertical=False):
                 # Use the processed video
                 try: 
                     from pathlib import Path

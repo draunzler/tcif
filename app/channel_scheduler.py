@@ -48,9 +48,9 @@ def _download_and_post(channel: str):
         return
     
     try:
-        # 2. Fetch top clips from past 48 hours
-        logger.info(f"[{channel.upper()}] 🔍 Fetching top {game_name} clips from past 48 hours...")
-        clips = get_top_clips_last_n_hours(game_id=game_id, hours=48, limit=50)
+        # 2. Fetch top clips from past 24 hours
+        logger.info(f"[{channel.upper()}] 🔍 Fetching top {game_name} clips from past 24 hours...")
+        clips = get_top_clips_last_n_hours(game_id=game_id, hours=24, limit=50)
         
         if not clips:
             logger.info(f"[{channel.upper()}] 💤 No clips found for {game_name}.")
