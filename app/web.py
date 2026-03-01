@@ -166,9 +166,13 @@ async def health_check():
 async def api_analytics(days: int = 30):
     """Get YouTube Analytics data."""
     try:
-        if not is_authenticated():
+        main_auth = is_authenticated()
+        val_auth = is_channel_authenticated("valorant")
+        cs_auth = is_channel_authenticated("cs")
+        
+        if not (main_auth or val_auth or cs_auth):
             return JSONResponse(
-                {"error": "YouTube not connected"},
+                {"error": "No YouTube channels connected"},
                 status_code=401
             )
         

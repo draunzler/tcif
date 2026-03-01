@@ -7,13 +7,18 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.youtube_auth import get_credentials
+from app.channel_auth import get_channel_credentials
 
 logger = logging.getLogger(__name__)
 
 
-def get_analytics_client():
-    """Get YouTube Analytics API client."""
-    credentials = get_credentials()
+def get_analytics_client(channel=None):
+    """Get YouTube Analytics API client for the specified channel."""
+    if channel:
+        credentials = get_channel_credentials(channel)
+    else:
+        credentials = get_credentials()
+        
     if not credentials:
         return None
     
@@ -22,7 +27,7 @@ def get_analytics_client():
 
 def get_channel_analytics(days=30):
     """
-    Get channel analytics for the last N days.
+    Get channel analytics for the last N days across all connected channels.
     
     Args:
         days: Number of days to fetch (default 30)
@@ -30,117 +35,159 @@ def get_channel_analytics(days=30):
     Returns:
         dict: Analytics data or None if error
     """
-    try:
-        analytics = get_analytics_client()
-        if not analytics:
-            logger.warning("YouTube Analytics not authenticated")
-            return None
-        
-        # Get date range
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=days)
-        
-        # Fetch analytics data
-        results = analytics.reports().query(
-            ids='channel==MINE',
-            startDate=start_date.isoformat(),
-            endDate=end_date.isoformat(),
-            metrics='views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost',
-            dimensions='day',
-            sort='day'
-        ).execute()
-        
-        # Parse results
-        columns = results.get('columnHeaders', [])
-        rows = results.get('rows', [])
-        
-        if not rows:
-            logger.info("No analytics data available")
-            return {
-                'labels': [],
-                'views': [],
-                'watchTime': [],
-                'avgViewDuration': [],
-                'subscribersGained': [],
-                'subscribersLost': []
-            }
-        
-        # Extract data
-        labels = []
-        views = []
-        watch_time = []
-        avg_view_duration = []
-        subscribers_gained = []
-        subscribers_lost = []
-        
-        for row in rows:
-            labels.append(row[0])  # day
-            views.append(row[1])  # views
-            watch_time.append(row[2])  # estimatedMinutesWatched
-            avg_view_duration.append(row[3])  # averageViewDuration
-            subscribers_gained.append(row[4])  # subscribersGained
-            subscribers_lost.append(row[5])  # subscribersLost
-        
-        return {
-            'labels': labels,
-            'views': views,
-            'watchTime': watch_time,
-            'avgViewDuration': avg_view_duration,
-            'subscribersGained': subscribers_gained,
-            'subscribersLost': subscribers_lost
-        }
-        
-    except HttpError as e:
-        logger.error(f"YouTube Analytics API error: {e}", exc_info=True)
+    channels = [None, 'valorant', 'cs']
+    aggregated_data = {}
+    
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    
+    any_success = False
+
+    for channel in channels:
+        try:
+            analytics = get_analytics_client(channel)
+            if not analytics:
+                continue
+            
+            # Fetch analytics data
+            results = analytics.reports().query(
+                ids='channel==MINE',
+                startDate=start_date.isoformat(),
+                endDate=end_date.isoformat(),
+                metrics='views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost',
+                dimensions='day',
+                sort='day'
+            ).execute()
+            
+            rows = results.get('rows', [])
+            if not rows:
+                continue
+                
+            any_success = True
+            
+            for row in rows:
+                day = row[0]
+                views = row[1]
+                watch_time = row[2]
+                avg_duration = row[3]
+                subs_gained = row[4]
+                subs_lost = row[5]
+                
+                if day not in aggregated_data:
+                    aggregated_data[day] = {
+                        'views': 0,
+                        'watchTime': 0,
+                        'totalDuration': 0, # for computing weighted average
+                        'subscribersGained': 0,
+                        'subscribersLost': 0
+                    }
+                    
+                aggregated_data[day]['views'] += views
+                aggregated_data[day]['watchTime'] += watch_time
+                aggregated_data[day]['totalDuration'] += (avg_duration * views)
+                aggregated_data[day]['subscribersGained'] += subs_gained
+                aggregated_data[day]['subscribersLost'] += subs_lost
+                
+        except HttpError as e:
+            logger.error(f"YouTube Analytics API error for channel {channel}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error fetching analytics for channel {channel}: {e}", exc_info=True)
+
+    if not any_success:
         return None
-    except Exception as e:
-        logger.error(f"Error fetching analytics: {e}", exc_info=True)
-        return None
+
+    # Prepare final sorted arrays
+    labels = []
+    views = []
+    watch_time = []
+    avg_view_duration = []
+    subscribers_gained = []
+    subscribers_lost = []
+    
+    for day in sorted(aggregated_data.keys()):
+        data = aggregated_data[day]
+        labels.append(day)
+        views.append(data['views'])
+        watch_time.append(data['watchTime'])
+        
+        # Calculate weighted average duration
+        avg_dur = data['totalDuration'] / data['views'] if data['views'] > 0 else 0
+        avg_view_duration.append(round(avg_dur))
+        
+        subscribers_gained.append(data['subscribersGained'])
+        subscribers_lost.append(data['subscribersLost'])
+        
+    return {
+        'labels': labels,
+        'views': views,
+        'watchTime': watch_time,
+        'avgViewDuration': avg_view_duration,
+        'subscribersGained': subscribers_gained,
+        'subscribersLost': subscribers_lost
+    }
 
 
 def get_channel_summary():
     """
-    Get summary statistics for the channel (last 28 days).
+    Get summary statistics for all connected channels (last 28 days).
     
     Returns:
         dict: Summary stats or None if error
     """
-    try:
-        analytics = get_analytics_client()
-        if not analytics:
-            return None
-        
-        # Get last 28 days
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=28)
-        
-        results = analytics.reports().query(
-            ids='channel==MINE',
-            startDate=start_date.isoformat(),
-            endDate=end_date.isoformat(),
-            metrics='views,estimatedMinutesWatched,averageViewDuration,subscribersGained'
-        ).execute()
-        
-        if not results.get('rows'):
-            return {
-                'totalViews': 0,
-                'totalWatchTime': 0,
-                'avgViewDuration': 0,
-                'subscribersGained': 0
-            }
-        
-        row = results['rows'][0]
-        
-        return {
-            'totalViews': row[0],
-            'totalWatchTime': row[1],
-            'avgViewDuration': row[2],
-            'subscribersGained': row[3]
-        }
-        
-    except HttpError as e:
-        logger.error(f"YouTube Analytics API error: {e}", exc_info=True)
+    channels = [None, 'valorant', 'cs']
+    
+    total_views = 0
+    total_watch_time = 0
+    total_duration_weighted = 0
+    total_subs_gained = 0
+    
+    any_success = False
+    
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=28)
+
+    for channel in channels:
+        try:
+            analytics = get_analytics_client(channel)
+            if not analytics:
+                continue
+            
+            results = analytics.reports().query(
+                ids='channel==MINE',
+                startDate=start_date.isoformat(),
+                endDate=end_date.isoformat(),
+                metrics='views,estimatedMinutesWatched,averageViewDuration,subscribersGained'
+            ).execute()
+            
+            if not results.get('rows'):
+                continue
+                
+            any_success = True
+            row = results['rows'][0]
+            
+            views = row[0]
+            watch_time = row[1]
+            avg_duration = row[2]
+            subs_gained = row[3]
+            
+            total_views += views
+            total_watch_time += watch_time
+            total_duration_weighted += (avg_duration * views)
+            total_subs_gained += subs_gained
+            
+        except HttpError as e:
+            logger.error(f"YouTube Analytics API error for channel {channel}: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error fetching summary for channel {channel}: {e}", exc_info=True)
+
+    if not any_success:
         return None
-    except Exception as e:
-        logger.error(f"Error fetching summary: {e}", exc_info=True)
-        return None
+
+    avg_view_duration = total_duration_weighted / total_views if total_views > 0 else 0
+
+    return {
+        'totalViews': total_views,
+        'totalWatchTime': total_watch_time,
+        'avgViewDuration': round(avg_view_duration),
+        'subscribersGained': total_subs_gained
+    }
